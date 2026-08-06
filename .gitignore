@@ -90,6 +90,9 @@ typings/
 # Nuxt.js build / generate output
 .nuxt
 dist
+.direnv/
+result
+result-*
 
 # Gatsby files
 .cache/
@@ -111,3 +114,5 @@ dist
 
 # TernJS port file
 .tern-port
+.env.*
+!.env.example
