@@ -6,17 +6,18 @@ export interface HelpEntry {
 
 export const HELP_ENTRIES: readonly HelpEntry[] = [
   { keys: "1", action: "Open My Issues", description: "Issues assigned to you" },
-  { keys: "2", action: "Open Teams", description: "Browse a team, then open its issues" },
+  { keys: "2", action: "Open Team Issues", description: "Issues in the active team" },
   {
     keys: "3",
     action: "Open Cycles",
-    description: "Browse each team's current cycle and its issues",
+    description: "Browse the active team's current cycle and its issues",
   },
   {
     keys: "4",
     action: "Open Projects",
-    description: "Browse active projects and their issues",
+    description: "Browse the active team's projects and their issues",
   },
+  { keys: "t", action: "Change team", description: "Choose the team used by every main view" },
   { keys: "j / Down", action: "Move down", description: "Select the next item" },
   { keys: "k / Up", action: "Move up", description: "Select the previous item" },
   { keys: "Enter", action: "Open or confirm", description: "Open a scope or confirm a picker" },

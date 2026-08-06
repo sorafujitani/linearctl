@@ -620,7 +620,10 @@ export class MockLinearClient implements LinearClient {
     const issues = this.issues.filter((issue) => {
       switch (scope.kind) {
         case "assigned-to-me":
-          return issue.assignee?.id === this.authStatus.viewer.id;
+          return (
+            issue.assignee?.id === this.authStatus.viewer.id &&
+            (scope.teamId === undefined || issue.team.id === scope.teamId)
+          );
         case "team":
           return issue.team.id === scope.teamId;
         case "cycle":
@@ -647,12 +650,22 @@ export class MockLinearClient implements LinearClient {
     return clone(this.labels);
   }
 
-  async getCurrentCycles(): Promise<Cycle[]> {
-    return clone(this.cycleDefinitions);
+  async getCurrentCycles(teamId?: string): Promise<Cycle[]> {
+    return clone(
+      teamId === undefined
+        ? this.cycleDefinitions
+        : this.cycleDefinitions.filter((cycle) => cycle.team.id === teamId),
+    );
   }
 
-  async getActiveProjects(): Promise<Project[]> {
-    return clone(this.projectDefinitions);
+  async getActiveProjects(teamId?: string): Promise<Project[]> {
+    return clone(
+      teamId === undefined
+        ? this.projectDefinitions
+        : this.projectDefinitions.filter((project) =>
+            project.teams.some((team) => team.id === teamId),
+          ),
+    );
   }
 
   async getWorkflowStates(teamId: string): Promise<WorkflowState[]> {

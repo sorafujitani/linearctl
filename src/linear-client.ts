@@ -131,8 +131,14 @@ const issueLabelsSchema = v.object({ issueLabels: v.object({ nodes: v.array(issu
 const currentCyclesSchema = v.object({
   teams: v.object({ nodes: v.array(v.object({ activeCycle: v.nullable(cycleSchema) })) }),
 });
+const teamCurrentCycleSchema = v.object({
+  team: v.object({ activeCycle: v.nullable(cycleSchema) }),
+});
 const activeProjectsSchema = v.object({
   projects: v.object({ nodes: v.array(projectSchema) }),
+});
+const teamActiveProjectsSchema = v.object({
+  team: v.object({ projects: v.object({ nodes: v.array(projectSchema) }) }),
 });
 const workflowStatesSchema = v.object({
   workflowStates: v.object({ nodes: v.array(workflowStateSchema) }),
@@ -164,8 +170,8 @@ export interface LinearClient {
   getIssues(scope: IssueScope): Promise<Issue[]>;
   getTeamMembers(teamId: string): Promise<UserSummary[]>;
   getIssueLabels(): Promise<IssueLabel[]>;
-  getCurrentCycles(): Promise<Cycle[]>;
-  getActiveProjects(): Promise<Project[]>;
+  getCurrentCycles(teamId?: string): Promise<Cycle[]>;
+  getActiveProjects(teamId?: string): Promise<Project[]>;
   getWorkflowStates(teamId: string): Promise<WorkflowState[]>;
   updateIssue(change: IssueChange): Promise<UpdatedIssue>;
 }
@@ -199,6 +205,25 @@ const ASSIGNED_ISSUES_QUERY = `
         first: 50
         orderBy: updatedAt
         filter: { state: { type: { nin: ["completed", "canceled"] } } }
+      ) {
+        nodes {
+          ${ISSUE_FIELDS}
+        }
+      }
+    }
+  }
+`;
+
+const TEAM_ASSIGNED_ISSUES_QUERY = `
+  query TeamAssignedIssues($teamId: ID!) {
+    viewer {
+      assignedIssues(
+        first: 50
+        orderBy: updatedAt
+        filter: {
+          team: { id: { eq: $teamId } }
+          state: { type: { nin: ["completed", "canceled"] } }
+        }
       ) {
         nodes {
           ${ISSUE_FIELDS}
@@ -262,6 +287,17 @@ const CURRENT_CYCLES_QUERY = `
   }
 `;
 
+const TEAM_CURRENT_CYCLE_QUERY = `
+  query TeamCurrentCycle($teamId: String!) {
+    team(id: $teamId) {
+      activeCycle {
+        id number name startsAt endsAt progress isActive
+        team { id name key }
+      }
+    }
+  }
+`;
+
 const ACTIVE_PROJECTS_QUERY = `
   query ActiveProjects {
     projects(
@@ -274,6 +310,25 @@ const ACTIVE_PROJECTS_QUERY = `
         status { id name type color }
       lead { id name }
       teams(first: 20) { nodes { id name key } }
+      }
+    }
+  }
+`;
+
+const TEAM_ACTIVE_PROJECTS_QUERY = `
+  query TeamActiveProjects($teamId: String!) {
+    team(id: $teamId) {
+      projects(
+        first: 50
+        orderBy: updatedAt
+        filter: { status: { type: { nin: ["completed", "canceled"] } } }
+      ) {
+        nodes {
+          id name description slugId url progress health startDate targetDate
+          status { id name type color }
+          lead { id name }
+          teams(first: 20) { nodes { id name key } }
+        }
       }
     }
   }
@@ -439,7 +494,14 @@ export class LinearGraphqlClient implements LinearClient {
   async getIssues(scope: IssueScope): Promise<Issue[]> {
     switch (scope.kind) {
       case "assigned-to-me": {
-        const data = await this.request(ASSIGNED_ISSUES_QUERY, {}, assignedIssuesSchema);
+        const data =
+          scope.teamId === undefined
+            ? await this.request(ASSIGNED_ISSUES_QUERY, {}, assignedIssuesSchema)
+            : await this.request(
+                TEAM_ASSIGNED_ISSUES_QUERY,
+                { teamId: scope.teamId },
+                assignedIssuesSchema,
+              );
         return data.viewer.assignedIssues.nodes.map(normalizeIssue);
       }
       case "team": {
@@ -479,14 +541,26 @@ export class LinearGraphqlClient implements LinearClient {
     return data.issueLabels.nodes;
   }
 
-  async getCurrentCycles(): Promise<Cycle[]> {
+  async getCurrentCycles(teamId?: string): Promise<Cycle[]> {
+    if (teamId !== undefined) {
+      const data = await this.request(TEAM_CURRENT_CYCLE_QUERY, { teamId }, teamCurrentCycleSchema);
+      return data.team.activeCycle === null ? [] : [normalizeCycle(data.team.activeCycle)];
+    }
     const data = await this.request(CURRENT_CYCLES_QUERY, {}, currentCyclesSchema);
     return data.teams.nodes.flatMap(({ activeCycle }) =>
       activeCycle === null ? [] : [normalizeCycle(activeCycle)],
     );
   }
 
-  async getActiveProjects(): Promise<Project[]> {
+  async getActiveProjects(teamId?: string): Promise<Project[]> {
+    if (teamId !== undefined) {
+      const data = await this.request(
+        TEAM_ACTIVE_PROJECTS_QUERY,
+        { teamId },
+        teamActiveProjectsSchema,
+      );
+      return data.team.projects.nodes.map(normalizeProject);
+    }
     const data = await this.request(ACTIVE_PROJECTS_QUERY, {}, activeProjectsSchema);
     return data.projects.nodes.map(normalizeProject);
   }

@@ -20,7 +20,7 @@ import {
 } from "./issue-list";
 
 export type TopNav = "my-issues" | "teams" | "cycles" | "projects";
-export type Catalog = "teams" | "cycles" | "projects";
+export type Catalog = "cycles" | "projects";
 
 export type Screen =
   | { kind: "catalog"; catalog: Catalog }
@@ -32,6 +32,12 @@ export interface SelectOption {
 }
 
 export type Overlay =
+  | {
+      kind: "team-context";
+      destination: TopNav;
+      options: SelectOption[];
+      selectedIndex: number;
+    }
   | { kind: "filter-field"; selectedIndex: number }
   | {
       kind: "filter-value";
@@ -63,6 +69,7 @@ interface PendingIssueRequest {
 export interface AppState {
   screen: Screen;
   teams: Team[];
+  activeTeamId: string | null;
   cycles: Cycle[];
   projects: Project[];
   issues: Issue[];
@@ -83,9 +90,10 @@ export function createAppState(): AppState {
       scope: { kind: "assigned-to-me" },
     },
     teams: [],
+    activeTeamId: null,
     cycles: [],
     projects: [],
-    catalogIndexes: { teams: 0, cycles: 0, projects: 0 },
+    catalogIndexes: { cycles: 0, projects: 0 },
     issues: [],
     query: "",
     filters: {},
@@ -112,49 +120,85 @@ export function selectedIssue(state: AppState): Issue | undefined {
   return traversableIssues(state).find((issue) => issue.id === state.selectedIssueId);
 }
 
-export function selectedCatalogItem(state: AppState): Team | Cycle | Project | undefined {
+export function selectedCatalogItem(state: AppState): Cycle | Project | undefined {
   if (state.screen.kind !== "catalog") return undefined;
   const index = state.catalogIndexes[state.screen.catalog];
   switch (state.screen.catalog) {
-    case "teams":
-      return state.teams[index];
     case "cycles":
-      return state.cycles[index];
+      return scopedCycles(state)[index];
     case "projects":
-      return state.projects[index];
+      return scopedProjects(state)[index];
   }
 }
 
-export function preferCatalogTeam(
-  state: AppState,
-  catalog: Catalog,
-  teamKey: string | undefined,
-): AppState {
-  if (teamKey === undefined) return state;
-  const normalized = teamKey.toUpperCase();
-  const index =
-    catalog === "teams"
-      ? state.teams.findIndex((team) => team.key.toUpperCase() === normalized)
-      : catalog === "cycles"
-        ? state.cycles.findIndex((cycle) => cycle.team.key.toUpperCase() === normalized)
-        : state.projects.findIndex((project) =>
-            project.teams.some((team) => team.key.toUpperCase() === normalized),
-          );
-  if (index < 0) return state;
+export function activeTeam(state: AppState): Team | undefined {
+  return state.teams.find((team) => team.id === state.activeTeamId);
+}
+
+export function scopedCycles(state: AppState): Cycle[] {
+  if (state.activeTeamId === null) return [];
+  return state.cycles.filter((cycle) => cycle.team.id === state.activeTeamId);
+}
+
+export function scopedProjects(state: AppState): Project[] {
+  if (state.activeTeamId === null) return [];
+  return state.projects.filter((project) =>
+    project.teams.some((team) => team.id === state.activeTeamId),
+  );
+}
+
+export function openTeamSelector(state: AppState, destination = currentTopNav(state)): AppState {
+  const options = state.teams.map((team) => ({
+    id: team.id,
+    label: `${team.key} · ${team.name}`,
+  }));
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.id === state.activeTeamId),
+  );
   return {
     ...state,
-    catalogIndexes: { ...state.catalogIndexes, [catalog]: index },
+    overlay: { kind: "team-context", destination, options, selectedIndex },
+  };
+}
+
+export function selectActiveTeam(
+  state: AppState,
+  teamId: string,
+  destination = currentTopNav(state),
+): AppState {
+  if (!state.teams.some((team) => team.id === teamId)) return state;
+  const screen: Screen =
+    destination === "my-issues"
+      ? {
+          kind: "issue-browser",
+          origin: destination,
+          scope: { kind: "assigned-to-me", teamId },
+        }
+      : destination === "teams"
+        ? { kind: "issue-browser", origin: destination, scope: { kind: "team", teamId } }
+        : { kind: "catalog", catalog: destination };
+  return {
+    ...state,
+    activeTeamId: teamId,
+    screen,
+    issues: [],
+    catalogIndexes: { cycles: 0, projects: 0 },
+    query: "",
+    filters: {},
+    groupBy: "none",
+    selectedIssueId: null,
+    overlay: null,
+    pendingIssueRequest: null,
   };
 }
 
 function catalogCount(state: AppState, catalog: Catalog): number {
   switch (catalog) {
-    case "teams":
-      return state.teams.length;
     case "cycles":
-      return state.cycles.length;
+      return scopedCycles(state).length;
     case "projects":
-      return state.projects.length;
+      return scopedProjects(state).length;
   }
 }
 
@@ -164,12 +208,25 @@ function clamp(index: number, count: number): number {
 }
 
 export function selectTopNav(state: AppState, nav: TopNav): AppState {
+  if (state.activeTeamId === null) return openTeamSelector(state, nav);
   const alreadyAssigned =
-    state.screen.kind === "issue-browser" && state.screen.scope.kind === "assigned-to-me";
+    state.screen.kind === "issue-browser" &&
+    state.screen.scope.kind === "assigned-to-me" &&
+    state.screen.scope.teamId === state.activeTeamId;
   const screen: Screen =
     nav === "my-issues"
-      ? { kind: "issue-browser", origin: nav, scope: { kind: "assigned-to-me" } }
-      : { kind: "catalog", catalog: nav };
+      ? {
+          kind: "issue-browser",
+          origin: nav,
+          scope: { kind: "assigned-to-me", teamId: state.activeTeamId },
+        }
+      : nav === "teams"
+        ? {
+            kind: "issue-browser",
+            origin: nav,
+            scope: { kind: "team", teamId: state.activeTeamId },
+          }
+        : { kind: "catalog", catalog: nav };
   return {
     ...state,
     screen,
@@ -206,11 +263,9 @@ export function drillIntoSelected(state: AppState): AppState {
   const selected = selectedCatalogItem(state);
   if (selected === undefined) return state;
   const scope: IssueScope =
-    origin === "teams"
-      ? { kind: "team", teamId: selected.id }
-      : origin === "cycles"
-        ? { kind: "cycle", cycleId: selected.id }
-        : { kind: "project", projectId: selected.id };
+    origin === "cycles"
+      ? { kind: "cycle", cycleId: selected.id }
+      : { kind: "project", projectId: selected.id };
   return {
     ...state,
     screen: { kind: "issue-browser", origin, scope },
@@ -225,7 +280,12 @@ export function drillIntoSelected(state: AppState): AppState {
 }
 
 export function escapeIssueBrowser(state: AppState): AppState {
-  if (state.screen.kind !== "issue-browser" || state.screen.origin === "my-issues") return state;
+  if (
+    state.screen.kind !== "issue-browser" ||
+    state.screen.origin === "my-issues" ||
+    state.screen.origin === "teams"
+  )
+    return state;
   return {
     ...state,
     screen: { kind: "catalog", catalog: state.screen.origin },
@@ -243,7 +303,7 @@ function sameScope(left: IssueScope, right: IssueScope): boolean {
   if (left.kind !== right.kind) return false;
   switch (left.kind) {
     case "assigned-to-me":
-      return true;
+      return right.kind === "assigned-to-me" && left.teamId === right.teamId;
     case "team":
       return right.kind === "team" && left.teamId === right.teamId;
     case "cycle":

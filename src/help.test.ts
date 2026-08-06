@@ -17,6 +17,9 @@ describe("searchable help", () => {
     ]);
     expect(filterHelpEntries(HELP_ENTRIES, "Ctrl+C")).toHaveLength(1);
     expect(filterHelpEntries(HELP_ENTRIES, "issue link").map((entry) => entry.keys)).toEqual(["u"]);
+    expect(filterHelpEntries(HELP_ENTRIES, "change team").map((entry) => entry.keys)).toEqual([
+      "t",
+    ]);
   });
 
   it("renders a useful empty state", () => {

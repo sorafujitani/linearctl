@@ -44,7 +44,7 @@ export interface IssueLabel {
 }
 
 export type IssueScope =
-  | { kind: "assigned-to-me" }
+  | { kind: "assigned-to-me"; teamId?: string }
   | { kind: "team"; teamId: string }
   | { kind: "cycle"; cycleId: string }
   | { kind: "project"; projectId: string };

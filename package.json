@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@opentui/core": "0.5.1",
+    "string-width": "8.2.2",
     "valibot": "1.4.2"
   },
   "devDependencies": {

@@ -1,8 +1,14 @@
 import { expect, it } from "vite-plus/test";
 
-import { createAppState, setGroup } from "./app-state";
-import type { Issue, Team } from "./domain";
-import { issueListText, panelWidths, selectedIssueUrl } from "./tui";
+import { createAppState, selectActiveTeam, setGroup } from "./app-state";
+import type { Cycle, Issue, Project, Team } from "./domain";
+import {
+  catalogListText,
+  issueListText,
+  panelWidths,
+  selectedIssueUrl,
+  truncateToWidth,
+} from "./tui";
 
 const growth: Team = { id: "growth", key: "GROW", name: "Growth Operations" };
 const app: Team = { id: "app", key: "APP", name: "Product Engineering" };
@@ -40,13 +46,23 @@ it("renders grouped issues with distinct headers, indentation, and spacing", () 
   expect(issueListText(state, 100)).toBe(
     [
       "▾ GROW · Growth Operations · 2 issues",
-      "  › GROW-301  Launch the landing page test",
-      "    GROW-304  Recalculate onboarding performance",
+      "  › [Running] Launch the landing page test",
+      "    [Running] Recalculate onboarding performance",
       "",
       "▾ APP · Product Engineering · 1 issue",
-      "    APP-103  Design the experiment API",
+      "    [Running] Design the experiment API",
     ].join("\n"),
   );
+});
+
+it("truncates mixed-width text only at the end", () => {
+  const value = truncateToWidth(
+    "[In Review] [marketing-backend] 満足度送信 - POST /v1/offers/:id/satisfaction",
+    42,
+  );
+
+  expect(value).toBe("[In Review] [marketing-backend] 満足度送…");
+  expect(value.indexOf("…")).toBe(value.length - 1);
 });
 
 it("keeps status visible in ungrouped rows", () => {
@@ -73,7 +89,55 @@ it("returns the selected issue URL only from an issue browser", () => {
   expect(
     selectedIssueUrl({
       ...issueState,
-      screen: { kind: "catalog", catalog: "teams" },
+      screen: { kind: "catalog", catalog: "cycles" },
     }),
   ).toBeNull();
+});
+
+it("renders only cycles and projects from the active team", () => {
+  const cycle = (id: string, team: Team): Cycle => ({
+    id,
+    number: 24,
+    name: "August",
+    startsAt: "2026-08-01T00:00:00Z",
+    endsAt: "2026-08-14T00:00:00Z",
+    progress: 0.5,
+    isActive: true,
+    team,
+  });
+  const project = (id: string, name: string, teams: Team[]): Project => ({
+    id,
+    name,
+    slugId: id,
+    description: "",
+    url: `https://example.invalid/${id}`,
+    progress: 0,
+    health: null,
+    startDate: null,
+    targetDate: null,
+    status: { id: "planned", name: "Planned", type: "planned", color: "#fff" },
+    lead: null,
+    teams,
+  });
+  const state = selectActiveTeam(
+    {
+      ...createAppState(),
+      teams: [growth, app],
+      cycles: [cycle("growth-cycle", growth), cycle("app-cycle", app)],
+      projects: [
+        project("growth-project", "Growth project", [growth]),
+        project("app-project", "App project", [app]),
+        project("shared-project", "Shared project", [growth, app]),
+      ],
+    },
+    app.id,
+    "projects",
+  );
+
+  expect(catalogListText(state, 100)).toBe(
+    ["› [Planned] App project", "  [Planned] Shared project"].join("\n"),
+  );
+  expect(catalogListText({ ...state, screen: { kind: "catalog", catalog: "cycles" } }, 100)).toBe(
+    "› #24 August",
+  );
 });

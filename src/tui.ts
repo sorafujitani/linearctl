@@ -7,9 +7,11 @@ import {
   TextAttributes,
   TextRenderable,
 } from "@opentui/core";
+import stringWidth from "string-width";
 
 import {
   applyIssueUpdate,
+  activeTeam,
   beginIssueRequest,
   closeOverlay,
   createAppState,
@@ -20,11 +22,14 @@ import {
   issueChangeForOverlay,
   moveOverlay,
   moveSelection,
+  openTeamSelector,
   openOverlay,
-  preferCatalogTeam,
   resetIssueList,
   selectTopNav,
   selectedCatalogItem,
+  scopedCycles,
+  scopedProjects,
+  selectActiveTeam,
   selectedIssue,
   setFilter,
   setGroup,
@@ -44,7 +49,6 @@ import {
   type Issue,
   type IssueScope,
   type Project,
-  type Team,
   type Workspace,
 } from "./domain";
 import { HELP_ENTRIES, helpText } from "./help";
@@ -93,9 +97,23 @@ const DIMENSION_LABELS: Record<IssueDimension, string> = {
   label: "Label",
 };
 
-function truncate(value: string, width: number): string {
-  if (width <= 1) return value.slice(0, Math.max(width, 0));
-  return value.length <= width ? value : `${value.slice(0, width - 1)}…`;
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export function truncateToWidth(value: string, width: number): string {
+  const available = Math.max(0, Math.floor(width));
+  if (stringWidth(value) <= available) return value;
+  const ellipsis = "…";
+  const ellipsisWidth = stringWidth(ellipsis);
+  if (available < ellipsisWidth) return "";
+  let result = "";
+  let resultWidth = 0;
+  for (const { segment } of graphemeSegmenter.segment(value)) {
+    const segmentWidth = stringWidth(segment);
+    if (resultWidth + segmentWidth + ellipsisWidth > available) break;
+    result += segment;
+    resultWidth += segmentWidth;
+  }
+  return `${result}${ellipsis}`;
 }
 
 function formatDate(value: string | null): string {
@@ -192,8 +210,10 @@ function scopeTitle(scope: IssueScope, state: AppState): string {
   switch (scope.kind) {
     case "assigned-to-me":
       return "My Issues";
-    case "team":
-      return state.teams.find((team) => team.id === scope.teamId)?.name ?? "Team Issues";
+    case "team": {
+      const key = state.teams.find((team) => team.id === scope.teamId)?.key;
+      return key === undefined ? "Team Issues" : `${key} Team Issues`;
+    }
     case "cycle":
       return state.cycles.find((cycle) => cycle.id === scope.cycleId)?.name ?? "Cycle Issues";
     case "project":
@@ -215,7 +235,7 @@ export function issueListText(state: AppState, width: number): string {
     if (state.groupBy !== "none") {
       if (lines.length > 0) lines.push("");
       const issueCount = `${uniqueIssues.length} ${uniqueIssues.length === 1 ? "issue" : "issues"}`;
-      lines.push(truncate(`▾ ${group.label} · ${issueCount}`, width));
+      lines.push(truncateToWidth(`▾ ${group.label} · ${issueCount}`, width));
     }
     for (const issue of uniqueIssues) {
       displayed.add(issue.id);
@@ -223,8 +243,8 @@ export function issueListText(state: AppState, width: number): string {
       const row =
         state.groupBy === "none"
           ? `${marker} ${issue.identifier} [${issue.state.name}] ${issue.title}`
-          : `  ${marker} ${issue.identifier}  ${issue.title}`;
-      lines.push(truncate(row, width));
+          : `  ${marker} [${issue.state.name}] ${issue.title}`;
+      lines.push(truncateToWidth(row, width));
     }
   }
   return lines.join("\n");
@@ -255,41 +275,39 @@ function issueDetailText(issue: Issue | undefined): string {
   ].join("\n");
 }
 
-function catalogListText(state: AppState, width: number): string {
+export function catalogListText(state: AppState, width: number): string {
   if (state.screen.kind !== "catalog") return "";
   const index = state.catalogIndexes[state.screen.catalog];
   switch (state.screen.catalog) {
-    case "teams":
-      return state.teams
-        .map((team, row) =>
-          truncate(`${row === index ? "›" : " "} ${team.key}  ${team.name}`, width),
-        )
-        .join("\n");
-    case "cycles":
-      return state.cycles
+    case "cycles": {
+      const cycles = scopedCycles(state);
+      if (cycles.length === 0) return "No current cycle for this team.";
+      return cycles
         .map((cycle, row) =>
-          truncate(
-            `${row === index ? "›" : " "} ${cycle.team.key} #${cycle.number} ${cycle.name ?? "Untitled"}`,
+          truncateToWidth(
+            `${row === index ? "›" : " "} #${cycle.number} ${cycle.name ?? "Untitled"}`,
             width,
           ),
         )
         .join("\n");
-    case "projects":
-      return state.projects
+    }
+    case "projects": {
+      const projects = scopedProjects(state);
+      if (projects.length === 0) return "No active projects for this team.";
+      return projects
         .map((project, row) =>
-          truncate(
-            `${row === index ? "›" : " "} ${project.teams.map((team) => team.key).join("+")} [${project.status.name}] ${project.name}`,
+          truncateToWidth(
+            `${row === index ? "›" : " "} [${project.status.name}] ${project.name}`,
             width,
           ),
         )
         .join("\n");
+    }
   }
 }
 
-function catalogDetailText(item: Team | Cycle | Project | undefined): string {
+function catalogDetailText(item: Cycle | Project | undefined): string {
   if (item === undefined) return "Select an item.";
-  if ("key" in item)
-    return [`${item.key}  ${item.name}`, "", "Press Enter to open this team's issues."].join("\n");
   if ("startsAt" in item) {
     return [
       `${item.team.name}  #${item.number} ${item.name ?? "Untitled"}`,
@@ -316,6 +334,12 @@ function catalogDetailText(item: Team | Cycle | Project | undefined): string {
 }
 
 function overlayText(overlay: Overlay): string {
+  if (overlay.kind === "team-context") {
+    if (overlay.options.length === 0) return "No teams are available in this workspace.";
+    return overlay.options
+      .map((option, index) => `${index === overlay.selectedIndex ? "›" : " "} ${option.label}`)
+      .join("\n");
+  }
   if (overlay.kind === "filter-field") {
     return ISSUE_DIMENSIONS.map(
       (dimension, index) =>
@@ -346,6 +370,8 @@ function overlayText(overlay: Overlay): string {
 
 function overlayTitle(overlay: Overlay): string {
   switch (overlay.kind) {
+    case "team-context":
+      return "Choose Team";
     case "filter-field":
       return "Choose Filter";
     case "filter-value":
@@ -438,7 +464,6 @@ class LinearTui {
       width: "100%",
       height: "100%",
       wrapMode: "none",
-      truncate: true,
       selectable: false,
     });
     this.detail = new TextRenderable(renderer, {
@@ -511,7 +536,41 @@ class LinearTui {
 
   start(): void {
     this.render();
-    void this.reload();
+    void this.initialize();
+  }
+
+  private async initialize(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
+    let shouldReload = false;
+    try {
+      const teams = await this.options.client.getTeams();
+      this.state = { ...this.state, teams };
+      const configuredTeam = this.options.defaultTeam?.toUpperCase();
+      const selected =
+        configuredTeam === undefined
+          ? undefined
+          : teams.find((team) => team.key.toUpperCase() === configuredTeam);
+      if (selected !== undefined) {
+        this.state = selectActiveTeam(this.state, selected.id, "my-issues");
+        this.setMessage(`Team: ${selected.key} · ${selected.name}`, COLORS.success);
+        shouldReload = true;
+      } else {
+        this.state = openTeamSelector(this.state, "my-issues");
+        this.setMessage(
+          configuredTeam === undefined
+            ? "Choose a team to continue"
+            : `Default team ${configuredTeam} was not found. Choose a team.`,
+          configuredTeam === undefined ? COLORS.dim : COLORS.error,
+        );
+      }
+    } catch (error) {
+      this.setMessage(this.errorMessage(error), COLORS.error);
+    } finally {
+      this.busy = false;
+      this.render();
+    }
+    if (shouldReload) void this.reload();
   }
 
   private async reload(): Promise<void> {
@@ -537,32 +596,22 @@ class LinearTui {
   }
 
   private async reloadCatalog(catalog: Catalog): Promise<void> {
+    const teamId = this.state.activeTeamId;
+    if (teamId === null) throw new Error("Choose a team before loading this view.");
     switch (catalog) {
-      case "teams": {
-        const preferTeam = this.state.teams.length === 0;
-        const teams = await this.options.client.getTeams();
-        this.state = { ...this.state, teams };
-        if (preferTeam)
-          this.state = preferCatalogTeam(this.state, catalog, this.options.defaultTeam);
-        this.setMessage(`Loaded ${teams.length} teams`, COLORS.success);
-        break;
-      }
       case "cycles": {
-        const preferTeam = this.state.cycles.length === 0;
-        const cycles = await this.options.client.getCurrentCycles();
+        const cycles = await this.options.client.getCurrentCycles(teamId);
         this.state = { ...this.state, cycles };
-        if (preferTeam)
-          this.state = preferCatalogTeam(this.state, catalog, this.options.defaultTeam);
-        this.setMessage(`Loaded ${cycles.length} current cycles`, COLORS.success);
+        this.setMessage(`Loaded ${scopedCycles(this.state).length} current cycles`, COLORS.success);
         break;
       }
       case "projects": {
-        const preferTeam = this.state.projects.length === 0;
-        const projects = await this.options.client.getActiveProjects();
+        const projects = await this.options.client.getActiveProjects(teamId);
         this.state = { ...this.state, projects };
-        if (preferTeam)
-          this.state = preferCatalogTeam(this.state, catalog, this.options.defaultTeam);
-        this.setMessage(`Loaded ${projects.length} active projects`, COLORS.success);
+        this.setMessage(
+          `Loaded ${scopedProjects(this.state).length} active projects`,
+          COLORS.success,
+        );
         break;
       }
     }
@@ -572,6 +621,7 @@ class LinearTui {
     this.mode = "list";
     this.state = selectTopNav(this.state, nav);
     this.render();
+    if (this.state.overlay?.kind === "team-context") return;
     void this.reload();
   }
 
@@ -606,7 +656,7 @@ class LinearTui {
       } else if (action === "priority") {
         this.openSingle(action, issue.id, PRIORITIES, String(issue.priority));
       } else if (action === "cycle") {
-        const cycles = await this.options.client.getCurrentCycles();
+        const cycles = await this.options.client.getCurrentCycles(issue.team.id);
         this.state = { ...this.state, cycles };
         const options = cycles
           .filter((cycle) => cycle.team.id === issue.team.id)
@@ -621,7 +671,7 @@ class LinearTui {
           issue.cycle?.id ?? NONE_VALUE,
         );
       } else if (action === "project") {
-        const projects = await this.options.client.getActiveProjects();
+        const projects = await this.options.client.getActiveProjects(issue.team.id);
         this.state = { ...this.state, projects };
         const options = projects
           .filter((project) => project.teams.some((team) => team.id === issue.team.id))
@@ -686,6 +736,19 @@ class LinearTui {
   private async confirmOverlay(): Promise<void> {
     const overlay = this.state.overlay;
     if (overlay === null) return;
+    if (overlay.kind === "team-context") {
+      const selected = overlay.options[overlay.selectedIndex];
+      if (selected === undefined) return;
+      this.state = selectActiveTeam(this.state, selected.id, overlay.destination);
+      const team = activeTeam(this.state);
+      this.setMessage(
+        team === undefined ? "Team changed" : `Team: ${team.key} · ${team.name}`,
+        COLORS.success,
+      );
+      this.render();
+      void this.reload();
+      return;
+    }
     if (overlay.kind === "filter-field") {
       const dimension = ISSUE_DIMENSIONS[overlay.selectedIndex];
       if (dimension !== undefined) {
@@ -761,6 +824,10 @@ class LinearTui {
         break;
       case "4":
         this.selectNav("projects");
+        break;
+      case "t":
+        this.state = openTeamSelector(this.state);
+        this.render();
         break;
       case "q":
         this.quit();
@@ -879,8 +946,19 @@ class LinearTui {
   }
 
   private handleOverlayKey(key: KeyEvent): void {
-    if (key.name === "escape" || key.name === "q") this.state = closeOverlay(this.state);
-    else if (key.name === "up" || key.name === "k") this.state = moveOverlay(this.state, -1);
+    if (key.name === "q") {
+      if (this.state.overlay?.kind === "team-context" && this.state.activeTeamId === null) {
+        this.quit();
+        return;
+      }
+      this.state = closeOverlay(this.state);
+    } else if (key.name === "escape") {
+      if (this.state.overlay?.kind === "team-context" && this.state.activeTeamId === null) {
+        this.setMessage("Choose a team to continue", COLORS.error);
+        return;
+      }
+      this.state = closeOverlay(this.state);
+    } else if (key.name === "up" || key.name === "k") this.state = moveOverlay(this.state, -1);
     else if (key.name === "down" || key.name === "j") this.state = moveOverlay(this.state, 1);
     else if (key.name === "space" || key.sequence === " ")
       this.state = toggleSelectedLabel(this.state);
@@ -901,14 +979,16 @@ class LinearTui {
     const nav = (
       [
         ["my-issues", "1 My Issues"],
-        ["teams", "2 Teams"],
+        ["teams", "2 Team Issues"],
         ["cycles", "3 Cycles"],
         ["projects", "4 Projects"],
       ] satisfies [TopNav, string][]
     )
       .map(([id, label]) => (id === active ? `[${label}]` : label))
       .join("  ");
-    this.header.content = `${mock}linearctl  ${this.options.workspace.urlKey}  ${nav}`;
+    const team = activeTeam(this.state);
+    const teamLabel = team === undefined ? "Team: Choose" : `Team: ${team.key}`;
+    this.header.content = `${mock}linearctl  ${this.options.workspace.urlKey}  ${teamLabel}  ${nav}`;
     if (this.state.screen.kind === "issue-browser") {
       const visible = visibleIssues(this.state);
       this.listBox.title = ` ${scopeTitle(this.state.screen.scope, this.state)} ${visible.length}/${this.state.issues.length} `;
@@ -946,10 +1026,12 @@ class LinearTui {
       return `Search: ${this.state.query}█  Enter apply · Esc cancel · Ctrl+U clear`;
     if (this.state.overlay?.kind === "labels")
       return "Up/Down select · Space toggle · Enter save · Esc cancel";
+    if (this.state.overlay?.kind === "team-context" && this.state.activeTeamId === null)
+      return "Up/Down select · Enter confirm · q quit";
     if (this.state.overlay !== null) return "Up/Down select · Enter confirm · Esc cancel";
     if (this.state.screen.kind === "catalog")
-      return "Up/Down select · Enter open issues · r reload · ? all commands · q quit";
-    return "Up/Down select · / search · f filter · g group · u copy URL · ? help";
+      return "Up/Down select · Enter open issues · t change team · r reload · ? all commands · q quit";
+    return "Up/Down select · t change team · / search · f filter · g group · u copy URL · ? help";
   }
 
   private copyIssueUrl(): void {

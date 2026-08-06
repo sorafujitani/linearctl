@@ -171,6 +171,22 @@ describe("LinearGraphqlClient reads", () => {
     }
   });
 
+  it("scopes assigned issues to the active team", async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.query).toContain("query TeamAssignedIssues");
+      expect(request.query).toContain("team: { id: { eq: $teamId } }");
+      expect(request.variables).toEqual({ teamId: "team-1" });
+      return jsonResponse({ data: { viewer: { assignedIssues: { nodes: [issueNode()] } } } });
+    });
+    await expect(
+      new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
+        kind: "assigned-to-me",
+        teamId: "team-1",
+      }),
+    ).resolves.toHaveLength(1);
+  });
+
   it("reports when issue labels exceed the read limit", async () => {
     const fetcher = vi.fn(async () =>
       jsonResponse({
@@ -270,6 +286,48 @@ describe("LinearGraphqlClient reads", () => {
       fetcher,
     ).getActiveProjects();
     expect(projects[0]).toMatchObject({ health: null, lead: null, teams: [team] });
+  });
+
+  it("loads cycle and project catalogs through the active team", async () => {
+    const project = {
+      ...projectRef,
+      description: "Ship CLI",
+      url: "https://linear.app/example/project/launch",
+      progress: 0.25,
+      health: null,
+      startDate: null,
+      targetDate: null,
+      status: { id: "started", name: "In Progress", type: "started", color: "#fff" },
+      lead: null,
+      teams: { nodes: [team] },
+    };
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.variables).toEqual({ teamId: "team-1" });
+      expect(request.query).not.toContain("issues(");
+      if (request.query.includes("query TeamCurrentCycle")) {
+        return jsonResponse({
+          data: {
+            team: {
+              activeCycle: {
+                ...cycleRef,
+                startsAt: "2026-08-01T00:00:00.000Z",
+                endsAt: "2026-08-14T00:00:00.000Z",
+                progress: 0.5,
+                isActive: true,
+                team,
+              },
+            },
+          },
+        });
+      }
+      expect(request.query).toContain("query TeamActiveProjects");
+      expect(request.query).toContain("team(id: $teamId)");
+      return jsonResponse({ data: { team: { projects: { nodes: [project] } } } });
+    });
+    const client = new LinearGraphqlClient("test-key-not-real", fetcher);
+    await expect(client.getCurrentCycles("team-1")).resolves.toHaveLength(1);
+    await expect(client.getActiveProjects("team-1")).resolves.toHaveLength(1);
   });
 });
 

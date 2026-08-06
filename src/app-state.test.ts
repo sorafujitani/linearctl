@@ -11,8 +11,11 @@ import {
   issueChangeForOverlay,
   moveSelection,
   moveOverlay,
+  openTeamSelector,
   openOverlay,
-  preferCatalogTeam,
+  scopedCycles,
+  scopedProjects,
+  selectActiveTeam,
   selectTopNav,
   setFilter,
   setGroup,
@@ -43,18 +46,15 @@ const issue: Issue = {
 
 describe("app navigation", () => {
   it("handles 1-4 navigation, catalog drilldown, and Escape", () => {
-    let state = createAppState();
+    let state = selectActiveTeam({ ...createAppState(), teams: [team] }, team.id);
     expect(state.screen).toMatchObject({ kind: "issue-browser", origin: "my-issues" });
     state = selectTopNav(state, "teams");
-    state = { ...state, teams: [team] };
-    expect(state.screen).toEqual({ kind: "catalog", catalog: "teams" });
-    state = drillIntoSelected(state);
     expect(state.screen).toEqual({
       kind: "issue-browser",
       origin: "teams",
       scope: { kind: "team", teamId: "team-1" },
     });
-    expect(escapeIssueBrowser(state).screen).toEqual({ kind: "catalog", catalog: "teams" });
+    expect(escapeIssueBrowser(state).screen).toEqual(state.screen);
     expect(selectTopNav(state, "cycles").screen).toEqual({ kind: "catalog", catalog: "cycles" });
     expect(selectTopNav(state, "projects").screen).toEqual({
       kind: "catalog",
@@ -62,7 +62,7 @@ describe("app navigation", () => {
     });
   });
 
-  it("prefers the configured team without hiding other catalog entries", () => {
+  it("uses one active team for My Issues, cycles, and projects", () => {
     const other = { id: "team-2", name: "Other", key: "OTHER" };
     const cycle = {
       id: "cycle-1",
@@ -88,17 +88,41 @@ describe("app navigation", () => {
       lead: null,
       teams: [team, other],
     };
-    const state = {
+    let state: AppState = {
       ...createAppState(),
       teams: [other, team],
       cycles: [{ ...cycle, id: "other-cycle", team: other }, cycle],
       projects: [{ ...project, id: "other-project", teams: [other] }, project],
     };
 
-    expect(preferCatalogTeam(state, "teams", "team").catalogIndexes.teams).toBe(1);
-    expect(preferCatalogTeam(state, "cycles", "TEAM").catalogIndexes.cycles).toBe(1);
-    expect(preferCatalogTeam(state, "projects", "TEAM").catalogIndexes.projects).toBe(1);
-    expect(preferCatalogTeam(state, "teams", "missing").teams).toHaveLength(2);
+    state = selectActiveTeam(state, team.id);
+    expect(state.screen).toEqual({
+      kind: "issue-browser",
+      origin: "my-issues",
+      scope: { kind: "assigned-to-me", teamId: team.id },
+    });
+    expect(scopedCycles(state).map((item) => item.id)).toEqual(["cycle-1"]);
+    expect(scopedProjects(state).map((item) => item.id)).toEqual(["project-1"]);
+
+    state = selectTopNav(state, "projects");
+    state = drillIntoSelected(state);
+    expect(state.screen).toEqual({
+      kind: "issue-browser",
+      origin: "projects",
+      scope: { kind: "project", projectId: "project-1" },
+    });
+    state = escapeIssueBrowser(state);
+
+    state = openTeamSelector(state, "projects");
+    expect(state.overlay).toMatchObject({
+      kind: "team-context",
+      destination: "projects",
+      selectedIndex: 1,
+    });
+    expect(selectTopNav({ ...state, activeTeamId: null }, "cycles").overlay).toMatchObject({
+      kind: "team-context",
+      destination: "cycles",
+    });
   });
 
   it("moves issue selection in the visual order of group headers", () => {
@@ -122,15 +146,19 @@ describe("app navigation", () => {
   });
 
   it("does not overwrite the current issue browser with a stale request", () => {
-    let state = beginIssueRequest(createAppState(), 1);
+    let state = beginIssueRequest(
+      selectActiveTeam({ ...createAppState(), teams: [team] }, team.id),
+      1,
+    );
+    const assignedScope = { kind: "assigned-to-me", teamId: team.id } as const;
     state = selectTopNav(state, "teams");
-    state = finishIssueRequest(state, 1, { kind: "assigned-to-me" }, [issue]);
+    state = finishIssueRequest(state, 1, assignedScope, [issue]);
     expect(state.issues).toEqual([]);
 
     state = beginIssueRequest(selectTopNav(state, "my-issues"), 2);
-    state = finishIssueRequest(state, 1, { kind: "assigned-to-me" }, [issue]);
+    state = finishIssueRequest(state, 1, assignedScope, [issue]);
     expect(state.issues).toEqual([]);
-    state = finishIssueRequest(state, 2, { kind: "assigned-to-me" }, [issue]);
+    state = finishIssueRequest(state, 2, assignedScope, [issue]);
     expect(state.issues).toEqual([issue]);
   });
 });

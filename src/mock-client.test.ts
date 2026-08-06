@@ -45,6 +45,12 @@ describe("MockLinearClient fixture", () => {
       "started",
       "started",
     ]);
+    await expect(client.getCurrentCycles("mock-team-app")).resolves.toHaveLength(1);
+    expect(
+      (await client.getActiveProjects("mock-team-app")).every((project) =>
+        project.teams.some((team) => team.id === "mock-team-app"),
+      ),
+    ).toBe(true);
     expect(issues.every((issue) => !["completed", "canceled"].includes(issue.state.type))).toBe(
       true,
     );
@@ -68,6 +74,10 @@ describe("MockLinearClient fixture", () => {
   it("returns assigned, team, cycle, and project scopes from one issue source", async () => {
     const client = new MockLinearClient();
     const assigned = await client.getIssues({ kind: "assigned-to-me" });
+    const appAssigned = await client.getIssues({
+      kind: "assigned-to-me",
+      teamId: "mock-team-app",
+    });
     const app = await client.getIssues({ kind: "team", teamId: "mock-team-app" });
     const cycle = await client.getIssues({ kind: "cycle", cycleId: "mock-cycle-app-24" });
     const project = await client.getIssues({
@@ -75,6 +85,8 @@ describe("MockLinearClient fixture", () => {
       projectId: "mock-project-growth-experiments",
     });
     expect(assigned).toHaveLength(3);
+    expect(appAssigned.every((issue) => issue.team.id === "mock-team-app")).toBe(true);
+    expect(appAssigned.length).toBeGreaterThan(0);
     expect(app).toHaveLength(5);
     expect(cycle.every((issue) => issue.cycle?.id === "mock-cycle-app-24")).toBe(true);
     expect(project.every((issue) => issue.project?.id === "mock-project-growth-experiments")).toBe(
