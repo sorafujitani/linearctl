@@ -1,0 +1,40 @@
+{
+  "name": "linearctl",
+  "version": "0.1.0",
+  "description": "A focused terminal UI for Linear",
+  "bin": {
+    "linearctl": "./src/cli.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "dev:mock": "bun run src/cli.ts --mock --workspace fs0414",
+    "auth:mock": "bun run src/cli.ts auth status --mock --workspace fs0414",
+    "check": "vp check",
+    "check:fix": "vp check --fix",
+    "test": "vp test --run",
+    "test:watch": "vp test watch",
+    "test:coverage": "vp test run --coverage",
+    "typecheck": "vp check --no-fmt --no-lint",
+    "format": "vp fmt --write",
+    "build": "bun run scripts/build.ts",
+    "binary": "bun run scripts/build.ts",
+    "smoke": "bun run scripts/smoke.ts",
+    "verify": "vp run check && vp run test && vp run build && vp run smoke",
+    "release:prepare": "bun install --os='*' --cpu='*' @opentui/core@0.5.1"
+  },
+  "dependencies": {
+    "@opentui/core": "0.5.1",
+    "valibot": "1.4.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.3.9",
+    "@vitest/coverage-v8": "4.1.10",
+    "typescript": "7.0.2",
+    "vite-plus": "0.2.8"
+  },
+  "engines": {
+    "bun": "1.3.x"
+  },
+  "packageManager": "bun@1.3.9"
+}
