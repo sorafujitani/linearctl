@@ -62,6 +62,12 @@ Or run it without installing:
 nix run github:sorafujitani/linearctl
 ```
 
+Both forms track `main`. Append a tag to pin a release:
+
+```sh
+nix profile add github:sorafujitani/linearctl/v0.1.0
+```
+
 The Nix package supports Apple silicon macOS and arm64/x86_64 Linux. Intel macOS users can use Homebrew or a release binary.
 
 Verify the installation:
