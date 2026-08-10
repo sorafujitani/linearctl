@@ -18,7 +18,7 @@ const cleanEnvironment = Object.fromEntries(
     (entry): entry is [string, string] => entry[1] !== undefined && entry[0] !== "LINEAR_API_KEY",
   ),
 );
-cleanEnvironment.XDG_CONFIG_HOME = resolve("test-fixtures/config");
+cleanEnvironment["XDG_CONFIG_HOME"] = resolve("test-fixtures/config");
 
 async function run(args: readonly string[]): Promise<string> {
   const process = Bun.spawn([binary, ...args], {
@@ -44,9 +44,15 @@ if (!version.startsWith("linearctl ")) {
   throw new Error(`Unexpected version output: ${version.trim()}`);
 }
 
-const auth = await run(["auth", "status", "--mock", "--workspace", "fs0414"]);
-if (!auth.includes("Authentication: MOCK") || !auth.includes("(fs0414)")) {
+const auth = await run(["auth", "status", "--mock", "--workspace", "sample-workspace"]);
+if (!auth.includes("Authentication: MOCK") || !auth.includes("(sample-workspace)")) {
   throw new Error(`Unexpected mock authentication output: ${auth.trim()}`);
 }
 
-process.stdout.write(`smoke test passed: ${version.trim()} / mock workspace fs0414\n`);
+const issueList = await run(["issue", "list", "--mock", "--team", "APP", "--json"]);
+const issuePayload = JSON.parse(issueList) as { issues: { identifier: string }[] };
+if (!issuePayload.issues.some((issue) => issue.identifier.startsWith("APP-"))) {
+  throw new Error(`Unexpected mock issue list output: ${issueList.slice(0, 200)}`);
+}
+
+process.stdout.write(`smoke test passed: ${version.trim()} / mock workspace sample-workspace\n`);

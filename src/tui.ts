@@ -7,9 +7,12 @@ import {
   TextAttributes,
   TextRenderable,
 } from "@opentui/core";
-import stringWidth from "string-width";
 
 import {
+  applyCreatedIssue,
+  applyCreatedProject,
+  cancelOverlaySearch,
+  commitOverlaySearch,
   applyIssueUpdate,
   activeTeam,
   beginIssueRequest,
@@ -17,28 +20,39 @@ import {
   createAppState,
   currentTopNav,
   drillIntoSelected,
+  emptyIssueCreateDraft,
+  emptyProjectCreateDraft,
   escapeIssueBrowser,
   finishIssueRequest,
   issueChangeForOverlay,
+  issueCreateInputFromDraft,
+  issueEditDraft,
   moveOverlay,
   moveSelection,
   openTeamSelector,
   openOverlay,
+  overlaySupportsSearch,
+  projectCreateInputFromDraft,
   resetIssueList,
+  sameScope,
   selectTopNav,
   selectedCatalogItem,
-  scopedCycles,
   scopedProjects,
   selectActiveTeam,
   selectedIssue,
+  selectedOverlayOption,
   setFilter,
   setGroup,
+  setOverlayQuery,
   setQuery,
+  startOverlaySearch,
   toggleSelectedLabel,
   visibleIssues,
-  type AppState,
-  type Catalog,
+  visibleProjects,
+  type IssueCreateDraft,
+  type IssueEditDraft,
   type Overlay,
+  type ProjectCreateDraft,
   type SelectOption,
   type TopNav,
 } from "./app-state";
@@ -46,356 +60,67 @@ import type { ClientMode } from "./client-factory";
 import {
   sortWorkflowStates,
   type Cycle,
-  type Issue,
-  type IssueScope,
-  type Project,
+  type IssueChange,
+  type IssueCommentPage,
+  type IssuePage,
   type Workspace,
 } from "./domain";
 import { HELP_ENTRIES, helpText } from "./help";
-import {
-  groupIssueList,
-  ISSUE_DIMENSIONS,
-  NONE_VALUE,
-  type IssueDimension,
-  type IssueGroupDimension,
-} from "./issue-list";
+import { ISSUE_DIMENSIONS, NONE_VALUE, type IssueGroupDimension } from "./issue-list";
 import type { LinearClient } from "./linear-client";
-
-type Mode = "list" | "search" | "help";
+import { openUrlInBrowser, type UrlOpener } from "./open-url";
+import {
+  deleteBackward,
+  deleteForward,
+  insertText,
+  lineEnd,
+  lineStart,
+  moveCursorHorizontal,
+  moveCursorVertical,
+} from "./text-input";
+import { isCreateSubmit, isEditorConfirm, isSearchTrigger, printableKeyText } from "./key-intent";
+import { CATALOG_CONTROLS, ISSUE_BROWSER_CONTROLS, listIntent, type ListIntent } from "./keymap";
+import { helpIntent, searchIntent, type Mode } from "./ui-state";
+import { unreachable } from "./unreachable";
+import { openSelectedItemUrl, selectedItemUrl } from "./item-url";
+import {
+  CLEAR_VALUE,
+  cycleOptions,
+  ensureOption,
+  issueFilterOptions,
+  optionsWithNone,
+  PRIORITIES,
+} from "./issue-options";
+import { DIMENSION_LABELS, ISSUE_ACTION_LABELS, overlayText, overlayTitle } from "./overlay-view";
+import {
+  catalogDetailText,
+  catalogListText,
+  COLORS,
+  commentsText,
+  issueDetailText,
+  issueListRows,
+  listScrollOffset,
+  panelWidths,
+  scopeTitle,
+  selectableTextRows,
+  styledListContent,
+} from "./tui-format";
 
 interface TuiOptions {
-  client: LinearClient;
-  workspace: Workspace;
-  mode: ClientMode;
-  defaultTeam?: string;
-}
-
-const COLORS = {
-  accent: "#7AA2F7",
-  border: "#414868",
-  dim: "#737DA0",
-  error: "#F7768E",
-  success: "#9ECE6A",
-  text: "#C0CAF5",
-};
-
-const CLEAR_VALUE = "__clear__";
-const PRIORITIES: SelectOption[] = [
-  { id: "0", label: "No priority" },
-  { id: "1", label: "Urgent" },
-  { id: "2", label: "High" },
-  { id: "3", label: "Medium" },
-  { id: "4", label: "Low" },
-];
-const DIMENSION_LABELS: Record<IssueDimension, string> = {
-  status: "Status",
-  assignee: "Assignee",
-  priority: "Priority",
-  team: "Team",
-  cycle: "Cycle",
-  project: "Project",
-  label: "Label",
-};
-
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-export function truncateToWidth(value: string, width: number): string {
-  const available = Math.max(0, Math.floor(width));
-  if (stringWidth(value) <= available) return value;
-  const ellipsis = "…";
-  const ellipsisWidth = stringWidth(ellipsis);
-  if (available < ellipsisWidth) return "";
-  let result = "";
-  let resultWidth = 0;
-  for (const { segment } of graphemeSegmenter.segment(value)) {
-    const segmentWidth = stringWidth(segment);
-    if (resultWidth + segmentWidth + ellipsisWidth > available) break;
-    result += segment;
-    resultWidth += segmentWidth;
-  }
-  return `${result}${ellipsis}`;
-}
-
-function formatDate(value: string | null): string {
-  if (value === null) return "-";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
-}
-
-function formatProgress(value: number): string {
-  return `${Math.round(value * 100)}%`;
-}
-
-export function panelWidths(terminalWidth: number): { list: number; detail: number } {
-  const available = Math.max(Math.floor(terminalWidth) - 1, 2);
-  const list = Math.max(1, Math.floor(available * 0.42));
-  return { list, detail: Math.max(1, available - list) };
-}
-
-function uniqueOptions(options: readonly SelectOption[]): SelectOption[] {
-  return [...new Map(options.map((option) => [option.id, option])).values()];
-}
-
-function issueFilterOptions(issues: readonly Issue[], dimension: IssueDimension): SelectOption[] {
-  const clear = { id: CLEAR_VALUE, label: "Clear this filter" };
-  switch (dimension) {
-    case "status":
-      return [
-        clear,
-        ...uniqueOptions(issues.map((issue) => ({ id: issue.state.id, label: issue.state.name }))),
-      ];
-    case "assignee":
-      return [
-        clear,
-        { id: NONE_VALUE, label: "Unassigned" },
-        ...uniqueOptions(
-          issues.flatMap((issue) =>
-            issue.assignee === null ? [] : [{ id: issue.assignee.id, label: issue.assignee.name }],
-          ),
-        ),
-      ];
-    case "priority":
-      return [clear, ...PRIORITIES];
-    case "team":
-      return [
-        clear,
-        ...uniqueOptions(
-          issues.map((issue) => ({
-            id: issue.team.id,
-            label: `${issue.team.key} · ${issue.team.name}`,
-          })),
-        ),
-      ];
-    case "cycle":
-      return [
-        clear,
-        { id: NONE_VALUE, label: "Unassigned" },
-        ...uniqueOptions(
-          issues.flatMap((issue) =>
-            issue.cycle === null
-              ? []
-              : [
-                  {
-                    id: issue.cycle.id,
-                    label: `#${issue.cycle.number} ${issue.cycle.name ?? "Untitled"}`,
-                  },
-                ],
-          ),
-        ),
-      ];
-    case "project":
-      return [
-        clear,
-        { id: NONE_VALUE, label: "Unassigned" },
-        ...uniqueOptions(
-          issues.flatMap((issue) =>
-            issue.project === null ? [] : [{ id: issue.project.id, label: issue.project.name }],
-          ),
-        ),
-      ];
-    case "label":
-      return [
-        clear,
-        { id: NONE_VALUE, label: "No labels" },
-        ...uniqueOptions(
-          issues.flatMap((issue) =>
-            issue.labels.map((label) => ({ id: label.id, label: label.name })),
-          ),
-        ),
-      ];
-  }
-}
-
-function scopeTitle(scope: IssueScope, state: AppState): string {
-  switch (scope.kind) {
-    case "assigned-to-me":
-      return "My Issues";
-    case "team": {
-      const key = state.teams.find((team) => team.id === scope.teamId)?.key;
-      return key === undefined ? "Team Issues" : `${key} Team Issues`;
-    }
-    case "cycle":
-      return state.cycles.find((cycle) => cycle.id === scope.cycleId)?.name ?? "Cycle Issues";
-    case "project":
-      return (
-        state.projects.find((project) => project.id === scope.projectId)?.name ?? "Project Issues"
-      );
-  }
-}
-
-export function issueListText(state: AppState, width: number): string {
-  const issues = visibleIssues(state);
-  if (issues.length === 0) return "No issues match the current view.";
-  const groups = groupIssueList(issues, state.groupBy);
-  const lines: string[] = [];
-  const displayed = new Set<string>();
-  for (const group of groups) {
-    const uniqueIssues = group.issues.filter((issue) => !displayed.has(issue.id));
-    if (uniqueIssues.length === 0) continue;
-    if (state.groupBy !== "none") {
-      if (lines.length > 0) lines.push("");
-      const issueCount = `${uniqueIssues.length} ${uniqueIssues.length === 1 ? "issue" : "issues"}`;
-      lines.push(truncateToWidth(`▾ ${group.label} · ${issueCount}`, width));
-    }
-    for (const issue of uniqueIssues) {
-      displayed.add(issue.id);
-      const marker = issue.id === state.selectedIssueId ? "›" : " ";
-      const row =
-        state.groupBy === "none"
-          ? `${marker} ${issue.identifier} [${issue.state.name}] ${issue.title}`
-          : `  ${marker} [${issue.state.name}] ${issue.title}`;
-      lines.push(truncateToWidth(row, width));
-    }
-  }
-  return lines.join("\n");
-}
-
-export function selectedIssueUrl(state: AppState): string | null {
-  if (state.screen.kind !== "issue-browser") return null;
-  return selectedIssue(state)?.url ?? null;
-}
-
-function issueDetailText(issue: Issue | undefined): string {
-  if (issue === undefined) return "Select an issue.";
-  return [
-    `${issue.identifier}  ${issue.title}`,
-    "",
-    `Status:   ${issue.state.name}`,
-    `Assignee: ${issue.assignee?.name ?? "Unassigned"}`,
-    `Priority: ${issue.priorityLabel}`,
-    `Estimate: ${issue.estimate ?? "-"}`,
-    `Team:     ${issue.team.name}`,
-    `Cycle:    ${issue.cycle === null ? "Unassigned" : `#${issue.cycle.number} ${issue.cycle.name ?? "Untitled"}`}`,
-    `Project:  ${issue.project?.name ?? "Unassigned"}`,
-    `Labels:   ${issue.labels.map((label) => label.name).join(", ") || "-"}`,
-    `Updated:  ${formatDate(issue.updatedAt)}`,
-    `URL:      ${issue.url}`,
-    "",
-    issue.description?.trim() || "No description.",
-  ].join("\n");
-}
-
-export function catalogListText(state: AppState, width: number): string {
-  if (state.screen.kind !== "catalog") return "";
-  const index = state.catalogIndexes[state.screen.catalog];
-  switch (state.screen.catalog) {
-    case "cycles": {
-      const cycles = scopedCycles(state);
-      if (cycles.length === 0) return "No current cycle for this team.";
-      return cycles
-        .map((cycle, row) =>
-          truncateToWidth(
-            `${row === index ? "›" : " "} #${cycle.number} ${cycle.name ?? "Untitled"}`,
-            width,
-          ),
-        )
-        .join("\n");
-    }
-    case "projects": {
-      const projects = scopedProjects(state);
-      if (projects.length === 0) return "No active projects for this team.";
-      return projects
-        .map((project, row) =>
-          truncateToWidth(
-            `${row === index ? "›" : " "} [${project.status.name}] ${project.name}`,
-            width,
-          ),
-        )
-        .join("\n");
-    }
-  }
-}
-
-function catalogDetailText(item: Cycle | Project | undefined): string {
-  if (item === undefined) return "Select an item.";
-  if ("startsAt" in item) {
-    return [
-      `${item.team.name}  #${item.number} ${item.name ?? "Untitled"}`,
-      "",
-      `Period: ${formatDate(item.startsAt)} - ${formatDate(item.endsAt)}`,
-      `Progress: ${formatProgress(item.progress)}`,
-      "",
-      "Press Enter to load this cycle's issues.",
-    ].join("\n");
-  }
-  return [
-    item.name,
-    "",
-    `Status: ${item.status.name}`,
-    `Progress: ${formatProgress(item.progress)}`,
-    `Health: ${item.health ?? "-"}`,
-    `Lead: ${item.lead?.name ?? "-"}`,
-    `Teams: ${item.teams.map((team) => team.name).join(", ")}`,
-    "",
-    item.description,
-    "",
-    "Press Enter to load this project's issues.",
-  ].join("\n");
-}
-
-function overlayText(overlay: Overlay): string {
-  if (overlay.kind === "team-context") {
-    if (overlay.options.length === 0) return "No teams are available in this workspace.";
-    return overlay.options
-      .map((option, index) => `${index === overlay.selectedIndex ? "›" : " "} ${option.label}`)
-      .join("\n");
-  }
-  if (overlay.kind === "filter-field") {
-    return ISSUE_DIMENSIONS.map(
-      (dimension, index) =>
-        `${index === overlay.selectedIndex ? "›" : " "} ${DIMENSION_LABELS[dimension]}`,
-    ).join("\n");
-  }
-  if (overlay.kind === "group") {
-    const groups: IssueGroupDimension[] = ["none", ...ISSUE_DIMENSIONS];
-    return groups
-      .map(
-        (group, index) =>
-          `${index === overlay.selectedIndex ? "›" : " "} ${group === "none" ? "None" : DIMENSION_LABELS[group]}`,
-      )
-      .join("\n");
-  }
-  if (overlay.kind === "labels") {
-    return overlay.options
-      .map(
-        (label, index) =>
-          `${index === overlay.selectedIndex ? "›" : " "} ${overlay.selectedIds.includes(label.id) ? "[x]" : "[ ]"} ${label.name}`,
-      )
-      .join("\n");
-  }
-  return overlay.options
-    .map((option, index) => `${index === overlay.selectedIndex ? "›" : " "} ${option.label}`)
-    .join("\n");
-}
-
-function overlayTitle(overlay: Overlay): string {
-  switch (overlay.kind) {
-    case "team-context":
-      return "Choose Team";
-    case "filter-field":
-      return "Choose Filter";
-    case "filter-value":
-      return `Filter by ${DIMENSION_LABELS[overlay.dimension]}`;
-    case "group":
-      return "Group Issues";
-    case "labels":
-      return "Change Labels";
-    case "single-choice":
-      return `Change ${
-        {
-          status: "Status",
-          assignee: "Assignee",
-          priority: "Priority",
-          cycle: "Cycle",
-          project: "Project",
-        }[overlay.action]
-      }`;
-  }
+  readonly client: LinearClient;
+  readonly workspace: Workspace;
+  readonly mode: ClientMode;
+  readonly defaultTeam?: string;
+  readonly openUrl?: UrlOpener;
 }
 
 class LinearTui {
+  private readonly renderer: Awaited<ReturnType<typeof createCliRenderer>>;
+  private readonly options: TuiOptions;
+  private readonly done: () => void;
   private state = createAppState();
   private mode: Mode = "list";
+  private searchBaselineQuery = "";
   private helpQuery = "";
   private message = "Loading...";
   private messageColor = COLORS.dim;
@@ -408,16 +133,24 @@ class LinearTui {
   private readonly footer: TextRenderable;
   private readonly listBox: BoxRenderable;
   private readonly detailBox: BoxRenderable;
+  private readonly detailScroll: ScrollBoxRenderable;
+  /** Last rendered detail identity; scroll resets when it changes so a new item starts at the top. */
+  private detailKey = "";
+  /** Comments shown in the detail panel; cleared when the selection moves to another issue. */
+  private commentsView: { issueId: string; page: IssueCommentPage } | null = null;
   private readonly helpBox: BoxRenderable;
   private readonly helpSearch: TextRenderable;
   private readonly helpScroll: ScrollBoxRenderable;
   private readonly helpContent: TextRenderable;
 
   constructor(
-    private readonly renderer: Awaited<ReturnType<typeof createCliRenderer>>,
-    private readonly options: TuiOptions,
-    private readonly done: () => void,
+    renderer: Awaited<ReturnType<typeof createCliRenderer>>,
+    options: TuiOptions,
+    done: () => void,
   ) {
+    this.renderer = renderer;
+    this.options = options;
+    this.done = done;
     const root = new BoxRenderable(renderer, {
       id: "root",
       flexDirection: "column",
@@ -466,12 +199,19 @@ class LinearTui {
       wrapMode: "none",
       selectable: false,
     });
+    this.detailScroll = new ScrollBoxRenderable(renderer, {
+      id: "detail-scroll",
+      width: "100%",
+      height: "100%",
+      scrollY: true,
+      scrollX: false,
+      verticalScrollbarOptions: { visible: true },
+    });
     this.detail = new TextRenderable(renderer, {
       id: "detail",
       content: "",
       fg: COLORS.text,
       width: "100%",
-      height: "100%",
       wrapMode: "word",
     });
     this.footer = new TextRenderable(renderer, {
@@ -480,6 +220,8 @@ class LinearTui {
       content: "",
       fg: COLORS.dim,
       paddingLeft: 1,
+      // Word wrap would spend both rows on the controls line and hide the message row.
+      wrapMode: "none",
       truncate: true,
     });
     this.helpBox = new BoxRenderable(renderer, {
@@ -519,7 +261,8 @@ class LinearTui {
       wrapMode: "word",
     });
     this.listBox.add(this.list);
-    this.detailBox.add(this.detail);
+    this.detailScroll.add(this.detail);
+    this.detailBox.add(this.detailScroll);
     main.add(this.listBox);
     main.add(this.detailBox);
     root.add(this.header);
@@ -568,25 +311,23 @@ class LinearTui {
       this.setMessage(this.errorMessage(error), COLORS.error);
     } finally {
       this.busy = false;
-      this.render();
     }
-    if (shouldReload) void this.reload();
+    if (shouldReload) {
+      void this.reload();
+      return;
+    }
+    this.render();
   }
 
   private async reload(): Promise<void> {
+    if (this.state.screen.kind === "issue-browser") {
+      await this.reloadIssues();
+      return;
+    }
     if (this.busy) return;
     this.busy = true;
     try {
-      if (this.state.screen.kind === "issue-browser") {
-        const scope = this.state.screen.scope;
-        const requestId = ++this.requestId;
-        this.state = beginIssueRequest(this.state, requestId);
-        const issues = await this.options.client.getIssues(scope);
-        this.state = finishIssueRequest(this.state, requestId, scope, issues);
-        this.setMessage(`Loaded ${issues.length} issues`, COLORS.success);
-      } else {
-        await this.reloadCatalog(this.state.screen.catalog);
-      }
+      await this.reloadCatalog();
     } catch (error) {
       this.setMessage(this.errorMessage(error), COLORS.error);
     } finally {
@@ -595,41 +336,103 @@ class LinearTui {
     }
   }
 
-  private async reloadCatalog(catalog: Catalog): Promise<void> {
+  private async reloadIssues(force = false): Promise<void> {
+    if (this.state.screen.kind !== "issue-browser") return;
+    const scope = this.state.screen.scope;
+    // Key repeat on r/1-4 must not stack identical requests; a new scope still
+    // supersedes the pending one so view switches stay responsive. A forced
+    // reload (the done toggle) changes what the same scope returns, so it may not skip.
+    const pending = this.state.pendingIssueRequest;
+    if (!force && pending !== null && sameScope(pending.scope, scope)) return;
+    const requestId = ++this.requestId;
+    this.state = beginIssueRequest(this.state, requestId);
+    this.render();
+    try {
+      // Resolve the current cycle before the issue fetch so getIssues does not
+      // repeat the same cycle query, and so no await runs after finishIssueRequest
+      // (state committed after a second await would drop keys pressed meanwhile).
+      let cycles: Cycle[] | null = null;
+      let page: IssuePage;
+      if (scope.kind === "current-cycle") {
+        cycles = await this.options.client.getCurrentCycles(scope.teamId);
+        const cycle = cycles[0];
+        page =
+          cycle === undefined
+            ? { issues: [], hasMore: false }
+            : await this.options.client.getIssues(
+                { kind: "cycle", cycleId: cycle.id },
+                { includeDone: this.state.includeDone },
+              );
+      } else {
+        page = await this.options.client.getIssues(scope, {
+          includeDone: this.state.includeDone,
+        });
+      }
+      const next = finishIssueRequest(this.state, requestId, scope, page);
+      if (next !== this.state) {
+        this.state = cycles === null ? next : { ...next, cycles };
+        this.setMessage(
+          page.hasMore
+            ? `Loaded the first ${page.issues.length} issues; more exist on the server`
+            : `Loaded ${page.issues.length} issues`,
+          page.hasMore ? COLORS.warning : COLORS.success,
+        );
+      }
+    } catch (error) {
+      // A superseded request must not clear the newer pending state or repaint
+      // the current view's message with its own failure.
+      if (this.state.pendingIssueRequest?.id === requestId) {
+        this.state = { ...this.state, pendingIssueRequest: null };
+        this.setMessage(this.errorMessage(error), COLORS.error);
+      }
+    } finally {
+      this.render();
+    }
+  }
+
+  private async reloadCatalog(): Promise<void> {
     const teamId = this.state.activeTeamId;
     if (teamId === null) throw new Error("Choose a team before loading this view.");
-    switch (catalog) {
-      case "cycles": {
-        const cycles = await this.options.client.getCurrentCycles(teamId);
-        this.state = { ...this.state, cycles };
-        this.setMessage(`Loaded ${scopedCycles(this.state).length} current cycles`, COLORS.success);
-        break;
-      }
-      case "projects": {
-        const projects = await this.options.client.getActiveProjects(teamId);
-        this.state = { ...this.state, projects };
-        this.setMessage(
-          `Loaded ${scopedProjects(this.state).length} active projects`,
-          COLORS.success,
-        );
-        break;
-      }
-    }
+    const page = await this.options.client.getActiveProjects(teamId);
+    this.state = { ...this.state, projects: page.projects, projectsHasMore: page.hasMore };
+    this.setMessage(
+      page.hasMore
+        ? `Loaded the first ${scopedProjects(this.state).length} active projects; more exist on the server`
+        : `Loaded ${scopedProjects(this.state).length} active projects`,
+      page.hasMore ? COLORS.warning : COLORS.success,
+    );
   }
 
   private selectNav(nav: TopNav): void {
     this.mode = "list";
     this.state = selectTopNav(this.state, nav);
-    this.render();
-    if (this.state.overlay?.kind === "team-context") return;
+    if (this.state.overlay?.kind === "team-context") {
+      this.render();
+      return;
+    }
     void this.reload();
   }
 
-  private async openIssueAction(
-    action: "status" | "assignee" | "priority" | "cycle" | "project" | "labels",
-  ): Promise<void> {
+  private requestIssueAction(action: Exclude<IssueChange["kind"], "content">): void {
+    if (this.state.screen.kind !== "issue-browser") {
+      this.setMessage(
+        `Open an issue view before changing its ${ISSUE_ACTION_LABELS[action].toLowerCase()}`,
+        COLORS.error,
+      );
+      return;
+    }
+    void this.openIssueAction(action);
+  }
+
+  private async openIssueAction(action: Exclude<IssueChange["kind"], "content">): Promise<void> {
     const issue = selectedIssue(this.state);
-    if (issue === undefined || this.busy) return;
+    if (issue === undefined) {
+      this.setMessage(
+        `Select an issue before changing its ${ISSUE_ACTION_LABELS[action].toLowerCase()}`,
+        COLORS.error,
+      );
+      return;
+    }
     this.busy = true;
     try {
       if (action === "status") {
@@ -656,14 +459,16 @@ class LinearTui {
       } else if (action === "priority") {
         this.openSingle(action, issue.id, PRIORITIES, String(issue.priority));
       } else if (action === "cycle") {
-        const cycles = await this.options.client.getCurrentCycles(issue.team.id);
-        this.state = { ...this.state, cycles };
-        const options = cycles
-          .filter((cycle) => cycle.team.id === issue.team.id)
-          .map((cycle) => ({
-            id: cycle.id,
-            label: `#${cycle.number} ${cycle.name ?? "Untitled"}`,
-          }));
+        const cycles = await this.options.client.getTeamCycles(issue.team.id);
+        const options = ensureOption(
+          cycleOptions(cycles),
+          issue.cycle === null
+            ? null
+            : {
+                id: issue.cycle.id,
+                label: `#${issue.cycle.number} ${issue.cycle.name ?? "Untitled"}`,
+              },
+        );
         this.openSingle(
           action,
           issue.id,
@@ -671,11 +476,14 @@ class LinearTui {
           issue.cycle?.id ?? NONE_VALUE,
         );
       } else if (action === "project") {
-        const projects = await this.options.client.getActiveProjects(issue.team.id);
+        const { projects } = await this.options.client.getActiveProjects(issue.team.id);
         this.state = { ...this.state, projects };
-        const options = projects
-          .filter((project) => project.teams.some((team) => team.id === issue.team.id))
-          .map((project) => ({ id: project.id, label: project.name }));
+        const options = ensureOption(
+          projects
+            .filter((project) => project.teams.some((team) => team.id === issue.team.id))
+            .map((project) => ({ id: project.id, label: project.name })),
+          issue.project === null ? null : { id: issue.project.id, label: issue.project.name },
+        );
         this.openSingle(
           action,
           issue.id,
@@ -733,11 +541,264 @@ class LinearTui {
     });
   }
 
+  private async openCreateIssue(): Promise<void> {
+    const team = activeTeam(this.state);
+    if (team === undefined) {
+      this.setMessage("Choose a team before creating an issue", COLORS.error);
+      return;
+    }
+    this.state = openOverlay(this.state, {
+      kind: "create-issue",
+      draft: emptyIssueCreateDraft(team.id),
+      focusedField: "title",
+      editor: "fields",
+      cursor: 0,
+    });
+    this.setMessage("Create issue · fill fields, then Create issue", COLORS.dim);
+    this.render();
+  }
+
+  private openEditIssue(): void {
+    const issue = selectedIssue(this.state);
+    if (issue === undefined) {
+      this.setMessage("Select an issue before editing it", COLORS.error);
+      return;
+    }
+    this.state = openOverlay(this.state, {
+      kind: "edit-issue",
+      draft: issueEditDraft(issue),
+      focusedField: "title",
+      editor: "fields",
+      cursor: 0,
+    });
+    this.setMessage(`Edit ${issue.identifier} · save explicitly when ready`, COLORS.dim);
+    this.render();
+  }
+
+  private async openCreateProject(): Promise<void> {
+    const team = activeTeam(this.state);
+    if (team === undefined) {
+      this.setMessage("Choose a team before creating a project", COLORS.error);
+      return;
+    }
+    this.state = openOverlay(this.state, {
+      kind: "create-project",
+      draft: emptyProjectCreateDraft(team.id),
+      focusedField: "name",
+      editor: "fields",
+      cursor: 0,
+    });
+    this.setMessage("Create project · fill fields, then Create project", COLORS.dim);
+    this.render();
+  }
+
+  private async openCreateFieldPicker(
+    field: "status" | "assignee" | "priority" | "cycle" | "project" | "lead" | "labels",
+  ): Promise<void> {
+    const overlay = this.state.overlay;
+    if (overlay === null || this.busy) return;
+    if (overlay.kind === "create-issue") {
+      const draft = overlay.draft;
+      this.busy = true;
+      try {
+        if (field === "status") {
+          const states = sortWorkflowStates(
+            await this.options.client.getWorkflowStates(draft.teamId),
+          );
+          const picked = optionsWithNone(
+            states.map((state) => ({ id: state.id, label: state.name })),
+            draft.stateId,
+            "Team default",
+          );
+          this.state = openOverlay(this.state, {
+            kind: "create-choice",
+            target: "issue",
+            field: "status",
+            draft,
+            options: picked.options,
+            selectedIndex: picked.selectedIndex,
+          });
+        } else if (field === "assignee") {
+          const users = await this.options.client.getTeamMembers(draft.teamId);
+          const picked = optionsWithNone(
+            users.map((user) => ({ id: user.id, label: user.name })),
+            draft.assigneeId,
+          );
+          this.state = openOverlay(this.state, {
+            kind: "create-choice",
+            target: "issue",
+            field: "assignee",
+            draft,
+            options: picked.options,
+            selectedIndex: picked.selectedIndex,
+          });
+        } else if (field === "priority") {
+          this.state = openOverlay(this.state, {
+            kind: "create-choice",
+            target: "issue",
+            field: "priority",
+            draft,
+            options: PRIORITIES,
+            selectedIndex: Math.max(
+              0,
+              PRIORITIES.findIndex((option) => option.id === String(draft.priority)),
+            ),
+          });
+        } else if (field === "cycle") {
+          const cycles = await this.options.client.getTeamCycles(draft.teamId);
+          const picked = optionsWithNone(
+            ensureOption(
+              cycleOptions(cycles),
+              draft.cycleId === null ? null : { id: draft.cycleId, label: draft.cycleLabel },
+            ),
+            draft.cycleId,
+          );
+          this.state = openOverlay(this.state, {
+            kind: "create-choice",
+            target: "issue",
+            field: "cycle",
+            draft,
+            options: picked.options,
+            selectedIndex: picked.selectedIndex,
+          });
+        } else if (field === "project") {
+          const { projects } = await this.options.client.getActiveProjects(draft.teamId);
+          this.state = { ...this.state, projects };
+          const picked = optionsWithNone(
+            ensureOption(
+              projects
+                .filter((project) => project.teams.some((team) => team.id === draft.teamId))
+                .map((project) => ({ id: project.id, label: project.name })),
+              draft.projectId === null ? null : { id: draft.projectId, label: draft.projectLabel },
+            ),
+            draft.projectId,
+          );
+          this.state = openOverlay(this.state, {
+            kind: "create-choice",
+            target: "issue",
+            field: "project",
+            draft,
+            options: picked.options,
+            selectedIndex: picked.selectedIndex,
+          });
+        } else if (field === "labels") {
+          const labels = (await this.options.client.getIssueLabels()).filter(
+            (label) => label.team === null || label.team.id === draft.teamId,
+          );
+          this.state = openOverlay(this.state, {
+            kind: "create-labels",
+            draft,
+            options: labels,
+            selectedIndex: 0,
+            selectedIds: [...draft.labelIds],
+          });
+        }
+      } catch (error) {
+        this.setMessage(this.errorMessage(error), COLORS.error);
+      } finally {
+        this.busy = false;
+        this.render();
+      }
+      return;
+    }
+    if (overlay.kind === "create-project" && field === "lead") {
+      this.busy = true;
+      try {
+        const users = await this.options.client.getTeamMembers(overlay.draft.teamId);
+        const picked = optionsWithNone(
+          users.map((user) => ({ id: user.id, label: user.name })),
+          overlay.draft.leadId,
+        );
+        this.state = openOverlay(this.state, {
+          kind: "create-choice",
+          target: "project",
+          field: "lead",
+          draft: overlay.draft,
+          options: picked.options,
+          selectedIndex: picked.selectedIndex,
+        });
+      } catch (error) {
+        this.setMessage(this.errorMessage(error), COLORS.error);
+      } finally {
+        this.busy = false;
+        this.render();
+      }
+    }
+  }
+
+  private async submitCreateIssue(draft: IssueCreateDraft): Promise<void> {
+    if (draft.title.trim().length === 0) {
+      this.setMessage("Issue title is required", COLORS.error);
+      return;
+    }
+    this.busy = true;
+    try {
+      const created = await this.options.client.createIssue(issueCreateInputFromDraft(draft));
+      this.state = applyCreatedIssue(this.state, created);
+      this.setMessage(`Created ${created.identifier}`, COLORS.success);
+    } catch (error) {
+      this.setMessage(this.errorMessage(error), COLORS.error);
+    } finally {
+      this.busy = false;
+      this.render();
+    }
+  }
+
+  private async submitCreateProject(draft: ProjectCreateDraft): Promise<void> {
+    if (draft.name.trim().length === 0) {
+      this.setMessage("Project name is required", COLORS.error);
+      return;
+    }
+    this.busy = true;
+    try {
+      const created = await this.options.client.createProject(projectCreateInputFromDraft(draft));
+      this.state = applyCreatedProject(this.state, created);
+      this.setMessage(`Created project ${created.name}`, COLORS.success);
+    } catch (error) {
+      this.setMessage(this.errorMessage(error), COLORS.error);
+    } finally {
+      this.busy = false;
+      this.render();
+    }
+  }
+
+  private async submitEditIssue(draft: IssueEditDraft): Promise<void> {
+    if (draft.title.trim().length === 0) {
+      this.setMessage("Issue title is required", COLORS.error);
+      return;
+    }
+    const issue = this.state.issues.find((candidate) => candidate.id === draft.issueId);
+    if (issue === undefined) {
+      this.state = closeOverlay(this.state);
+      this.setMessage("The issue is no longer in this view", COLORS.error);
+      this.render();
+      return;
+    }
+    const change = issueChangeForOverlay(this.state, issue);
+    if (change === null) {
+      this.state = closeOverlay(this.state);
+      this.setMessage("No issue changes to save", COLORS.dim);
+      this.render();
+      return;
+    }
+    this.busy = true;
+    try {
+      const updated = await this.options.client.updateIssue(change);
+      this.state = applyIssueUpdate(this.state, updated);
+      this.setMessage(`Updated ${issue.identifier}`, COLORS.success);
+    } catch (error) {
+      this.setMessage(this.errorMessage(error), COLORS.error);
+    } finally {
+      this.busy = false;
+      this.render();
+    }
+  }
+
   private async confirmOverlay(): Promise<void> {
     const overlay = this.state.overlay;
     if (overlay === null) return;
     if (overlay.kind === "team-context") {
-      const selected = overlay.options[overlay.selectedIndex];
+      const selected = selectedOverlayOption(this.state);
       if (selected === undefined) return;
       this.state = selectActiveTeam(this.state, selected.id, overlay.destination);
       const team = activeTeam(this.state);
@@ -745,7 +806,6 @@ class LinearTui {
         team === undefined ? "Team changed" : `Team: ${team.key} · ${team.name}`,
         COLORS.success,
       );
-      this.render();
       void this.reload();
       return;
     }
@@ -763,7 +823,7 @@ class LinearTui {
       return;
     }
     if (overlay.kind === "filter-value") {
-      const option = overlay.options[overlay.selectedIndex];
+      const option = selectedOverlayOption(this.state);
       if (option !== undefined)
         this.state = setFilter(
           this.state,
@@ -780,12 +840,159 @@ class LinearTui {
       this.render();
       return;
     }
+    if (overlay.kind === "edit-issue") {
+      if (overlay.editor !== "fields") return;
+      if (overlay.focusedField === "title") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "title",
+          cursor: overlay.draft.title.length,
+        });
+        this.render();
+        return;
+      }
+      if (overlay.focusedField === "description") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "description",
+          cursor: overlay.draft.description.length,
+        });
+        this.render();
+        return;
+      }
+      await this.submitEditIssue(overlay.draft);
+      return;
+    }
+    if (overlay.kind === "create-issue") {
+      if (overlay.editor !== "fields") return;
+      if (overlay.focusedField === "title") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "title",
+          cursor: overlay.draft.title.length,
+        });
+        this.render();
+        return;
+      }
+      if (overlay.focusedField === "description") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "description",
+          cursor: overlay.draft.description.length,
+        });
+        this.render();
+        return;
+      }
+      if (overlay.focusedField === "submit") {
+        await this.submitCreateIssue(overlay.draft);
+        return;
+      }
+      await this.openCreateFieldPicker(overlay.focusedField);
+      return;
+    }
+    if (overlay.kind === "create-project") {
+      if (overlay.editor !== "fields") return;
+      if (overlay.focusedField === "name") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "name",
+          cursor: overlay.draft.name.length,
+        });
+        this.render();
+        return;
+      }
+      if (overlay.focusedField === "description") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "description",
+          cursor: overlay.draft.description.length,
+        });
+        this.render();
+        return;
+      }
+      if (overlay.focusedField === "content") {
+        this.state = openOverlay(this.state, {
+          ...overlay,
+          editor: "content",
+          cursor: overlay.draft.content.length,
+        });
+        this.render();
+        return;
+      }
+      if (overlay.focusedField === "submit") {
+        await this.submitCreateProject(overlay.draft);
+        return;
+      }
+      await this.openCreateFieldPicker("lead");
+      return;
+    }
+    if (overlay.kind === "create-choice") {
+      const option = selectedOverlayOption(this.state);
+      if (option === undefined) return;
+      if (overlay.target === "issue") {
+        const draft = { ...overlay.draft };
+        if (overlay.field === "status") {
+          draft.stateId = option.id === NONE_VALUE ? null : option.id;
+          draft.stateLabel = option.label;
+        } else if (overlay.field === "assignee") {
+          draft.assigneeId = option.id === NONE_VALUE ? null : option.id;
+          draft.assigneeLabel = option.label;
+        } else if (overlay.field === "priority") {
+          draft.priority = Number(option.id);
+        } else if (overlay.field === "cycle") {
+          draft.cycleId = option.id === NONE_VALUE ? null : option.id;
+          draft.cycleLabel = option.label;
+        } else {
+          draft.projectId = option.id === NONE_VALUE ? null : option.id;
+          draft.projectLabel = option.label;
+        }
+        this.state = openOverlay(this.state, {
+          kind: "create-issue",
+          draft,
+          focusedField: overlay.field,
+          editor: "fields",
+          cursor: 0,
+        });
+      } else {
+        const draft = { ...overlay.draft };
+        draft.leadId = option.id === NONE_VALUE ? null : option.id;
+        draft.leadLabel = option.label;
+        this.state = openOverlay(this.state, {
+          kind: "create-project",
+          draft,
+          focusedField: overlay.field,
+          editor: "fields",
+          cursor: 0,
+        });
+      }
+      this.render();
+      return;
+    }
+    if (overlay.kind === "create-labels") {
+      const selected = overlay.options.filter((label) => overlay.selectedIds.includes(label.id));
+      const draft = {
+        ...overlay.draft,
+        labelIds: selected.map((label) => label.id),
+        labelSummary:
+          selected.length === 0 ? "None" : selected.map((label) => label.name).join(", "),
+      };
+      this.state = openOverlay(this.state, {
+        kind: "create-issue",
+        draft,
+        focusedField: "labels",
+        editor: "fields",
+        cursor: 0,
+      });
+      this.render();
+      return;
+    }
     const issueId =
       overlay.kind === "labels" || overlay.kind === "single-choice" ? overlay.issueId : null;
     const issue = this.state.issues.find((candidate) => candidate.id === issueId);
-    const change = issue === undefined ? null : issueChangeForOverlay(issue, overlay);
+    const change = issue === undefined ? null : issueChangeForOverlay(this.state, issue);
     if (change === null) {
       this.state = closeOverlay(this.state);
+      this.setMessage("No issue changes to save", COLORS.dim);
       this.render();
       return;
     }
@@ -807,157 +1014,430 @@ class LinearTui {
     if (key.ctrl && key.name === "c") return this.quit();
     if (this.busy) {
       if (key.name === "q") this.quit();
+      else this.setMessage("Working on the previous action...", COLORS.dim);
       return;
     }
     if (this.state.overlay !== null) return this.handleOverlayKey(key);
     if (this.mode === "help") return this.handleHelpKey(key);
     if (this.mode === "search") return this.handleSearchKey(key);
-    switch (key.name) {
-      case "1":
-        this.selectNav("my-issues");
-        break;
-      case "2":
-        this.selectNav("teams");
-        break;
-      case "3":
-        this.selectNav("cycles");
-        break;
-      case "4":
-        this.selectNav("projects");
-        break;
-      case "t":
+    const intent = listIntent(key);
+    if (intent !== null) this.applyListIntent(intent);
+  }
+
+  private applyListIntent(intent: ListIntent): void {
+    switch (intent.kind) {
+      case "nav":
+        return this.selectNav(intent.nav);
+      case "team-selector":
         this.state = openTeamSelector(this.state);
-        this.render();
-        break;
-      case "q":
-        this.quit();
-        break;
-      case "up":
-      case "k":
-        this.state = moveSelection(this.state, -1);
-        this.render();
-        break;
-      case "down":
-      case "j":
-        this.state = moveSelection(this.state, 1);
-        this.render();
-        break;
-      case "return":
-      case "enter":
+        return this.render();
+      case "create":
+        if (this.state.screen.kind === "catalog") void this.openCreateProject();
+        else if (this.state.screen.kind === "issue-browser") void this.openCreateIssue();
+        return;
+      case "edit":
+        if (this.state.screen.kind === "issue-browser") this.openEditIssue();
+        else this.setMessage("Open an issue view before editing an issue", COLORS.error);
+        return;
+      case "quit":
+        return this.quit();
+      case "move":
+        this.state = moveSelection(this.state, intent.delta);
+        return this.render();
+      case "activate":
         if (this.state.screen.kind === "catalog") {
           this.state = drillIntoSelected(this.state);
-          this.render();
           void this.reload();
         }
-        break;
-      case "escape":
+        return;
+      case "back":
         this.state = escapeIssueBrowser(this.state);
-        this.render();
-        break;
-      case "/":
-        if (this.state.screen.kind === "issue-browser") {
-          this.mode = "search";
-          this.render();
-        }
-        break;
-      case "f":
+        return this.render();
+      case "search":
+        return this.enterSearchMode();
+      case "filter":
         if (this.state.screen.kind === "issue-browser") {
           this.state = openOverlay(this.state, { kind: "filter-field", selectedIndex: 0 });
           this.render();
         }
-        break;
-      case "g":
+        return;
+      case "group":
         if (this.state.screen.kind === "issue-browser") {
           this.state = openOverlay(this.state, { kind: "group", selectedIndex: 0 });
           this.render();
         }
-        break;
-      case "x":
-        if (this.state.screen.kind === "issue-browser") {
-          this.state = resetIssueList(this.state);
-          this.render();
-        }
-        break;
-      case "r":
+        return;
+      case "reset":
+        this.state = resetIssueList(this.state);
+        return this.render();
+      case "reload":
         void this.reload();
-        break;
-      case "u":
-        this.copyIssueUrl();
-        break;
-      case "s":
-        if (this.state.screen.kind === "issue-browser") void this.openIssueAction("status");
-        break;
-      case "a":
-        if (this.state.screen.kind === "issue-browser") void this.openIssueAction("assignee");
-        break;
-      case "y":
-        if (this.state.screen.kind === "issue-browser") void this.openIssueAction("priority");
-        break;
-      case "c":
-        if (this.state.screen.kind === "issue-browser") void this.openIssueAction("cycle");
-        break;
-      case "p":
-        if (this.state.screen.kind === "issue-browser") void this.openIssueAction("project");
-        break;
-      case "l":
-        if (this.state.screen.kind === "issue-browser") void this.openIssueAction("labels");
-        break;
-      case "?":
+        return;
+      case "scroll-detail":
+        this.detailScroll.scrollBy(intent.delta);
+        return this.render();
+      case "open-url":
+        void this.openIssueInBrowser();
+        return;
+      case "copy-url":
+        return this.copyIssueUrl();
+      case "issue-action":
+        return this.requestIssueAction(intent.action);
+      case "comments":
+        void this.toggleComments();
+        return;
+      case "toggle-done":
+        if (this.state.screen.kind === "issue-browser") {
+          this.state = { ...this.state, includeDone: !this.state.includeDone };
+          this.setMessage(
+            this.state.includeDone
+              ? "Showing completed and canceled issues"
+              : "Hiding completed and canceled issues",
+            COLORS.dim,
+          );
+          void this.reloadIssues(true);
+        } else {
+          this.setMessage("Open an issue view before toggling done issues", COLORS.error);
+        }
+        return;
+      case "help":
         this.mode = "help";
         this.helpQuery = "";
         this.helpScroll.scrollTo(0);
-        this.render();
-        break;
+        return this.render();
+      default:
+        return unreachable(intent);
     }
   }
 
+  private enterSearchMode(): void {
+    if (this.state.screen.kind !== "issue-browser" && this.state.screen.kind !== "catalog") return;
+    this.searchBaselineQuery = this.state.query;
+    this.mode = "search";
+    this.render();
+  }
+
   private handleSearchKey(key: KeyEvent): void {
-    if (key.name === "escape" || key.name === "return" || key.name === "enter") {
-      this.mode = "list";
-      return this.render();
+    const intent = searchIntent(key);
+    switch (intent.kind) {
+      case "cancel":
+        this.state = setQuery(this.state, this.searchBaselineQuery);
+        this.mode = "list";
+        break;
+      case "commit":
+        this.mode = "list";
+        break;
+      case "backspace":
+        this.state = setQuery(this.state, this.state.query.slice(0, -1));
+        break;
+      case "clear":
+        this.state = setQuery(this.state, "");
+        break;
+      case "input":
+        this.state = setQuery(this.state, `${this.state.query}${intent.text}`);
+        break;
+      case "none":
+        return;
+      default:
+        return unreachable(intent);
     }
-    const query = this.state.query;
-    if (key.name === "backspace") this.state = setQuery(this.state, query.slice(0, -1));
-    else if (key.ctrl && key.name === "u") this.state = setQuery(this.state, "");
-    else if (!key.ctrl && !key.meta && key.sequence.length === 1)
-      this.state = setQuery(this.state, `${query}${key.sequence}`);
     this.render();
   }
 
   private handleHelpKey(key: KeyEvent): void {
-    if (key.name === "escape" || key.name === "?") {
-      this.mode = "list";
-      return this.render();
+    const intent = helpIntent(key);
+    switch (intent.kind) {
+      case "close":
+        this.mode = "list";
+        return this.render();
+      case "scroll":
+        this.helpScroll.scrollBy(intent.delta);
+        return this.render();
+      case "backspace":
+        this.helpQuery = this.helpQuery.slice(0, -1);
+        break;
+      case "clear":
+        this.helpQuery = "";
+        break;
+      case "input":
+        this.helpQuery = `${this.helpQuery}${intent.text}`;
+        break;
+      case "none":
+        return;
+      default:
+        return unreachable(intent);
     }
-    if (key.name === "up") {
-      this.helpScroll.scrollBy(-3);
-      return this.render();
-    }
-    if (key.name === "down") {
-      this.helpScroll.scrollBy(3);
-      return this.render();
-    }
-    if (key.name === "backspace") this.helpQuery = this.helpQuery.slice(0, -1);
-    else if (key.ctrl && key.name === "u") this.helpQuery = "";
-    else if (!key.ctrl && !key.meta && key.sequence.length === 1)
-      this.helpQuery = `${this.helpQuery}${key.sequence}`;
     this.helpScroll.scrollTo(0);
     this.render();
   }
 
+  /** Text field of the focused editor; single source for reading and writing draft text. */
+  private editorText(
+    overlay: Extract<
+      Overlay,
+      { kind: "create-issue" } | { kind: "create-project" } | { kind: "edit-issue" }
+    >,
+  ): string {
+    if (overlay.kind === "create-issue" || overlay.kind === "edit-issue") {
+      return overlay.editor === "title" ? overlay.draft.title : overlay.draft.description;
+    }
+    if (overlay.editor === "name") return overlay.draft.name;
+    if (overlay.editor === "description") return overlay.draft.description;
+    return overlay.draft.content;
+  }
+
+  private setEditorText(
+    overlay: Extract<
+      Overlay,
+      { kind: "create-issue" } | { kind: "create-project" } | { kind: "edit-issue" }
+    >,
+    text: string,
+    cursor: number,
+  ): void {
+    if (overlay.kind === "create-issue") {
+      const draft =
+        overlay.editor === "title"
+          ? { ...overlay.draft, title: text }
+          : { ...overlay.draft, description: text };
+      this.state = openOverlay(this.state, { ...overlay, draft, cursor });
+      return;
+    }
+    if (overlay.kind === "edit-issue") {
+      const draft =
+        overlay.editor === "title"
+          ? { ...overlay.draft, title: text }
+          : { ...overlay.draft, description: text };
+      this.state = openOverlay(this.state, { ...overlay, draft, cursor });
+      return;
+    }
+    const draft =
+      overlay.editor === "name"
+        ? { ...overlay.draft, name: text }
+        : overlay.editor === "description"
+          ? { ...overlay.draft, description: text }
+          : { ...overlay.draft, content: text };
+    this.state = openOverlay(this.state, { ...overlay, draft, cursor });
+  }
+
+  private handleCreateEditorKey(
+    key: KeyEvent,
+    overlay: Extract<
+      Overlay,
+      { kind: "create-issue" } | { kind: "create-project" } | { kind: "edit-issue" }
+    >,
+  ): void {
+    const multiline =
+      overlay.kind === "create-project"
+        ? overlay.editor === "content"
+        : overlay.editor === "description";
+    const text = this.editorText(overlay);
+    const cursor = overlay.cursor;
+
+    if (isEditorConfirm(key)) {
+      this.state = openOverlay(this.state, { ...overlay, editor: "fields" });
+      this.render();
+      return;
+    }
+    if (key.name === "left") {
+      this.state = openOverlay(this.state, {
+        ...overlay,
+        cursor: moveCursorHorizontal(text, cursor, -1),
+      });
+      this.render();
+      return;
+    }
+    if (key.name === "right") {
+      this.state = openOverlay(this.state, {
+        ...overlay,
+        cursor: moveCursorHorizontal(text, cursor, 1),
+      });
+      this.render();
+      return;
+    }
+    if (key.name === "up" || key.name === "down") {
+      const delta = key.name === "up" ? -1 : 1;
+      this.state = openOverlay(this.state, {
+        ...overlay,
+        cursor: multiline
+          ? moveCursorVertical(text, cursor, delta)
+          : moveCursorHorizontal(text, cursor, delta),
+      });
+      this.render();
+      return;
+    }
+    if (key.name === "home" || (key.ctrl && key.name === "a")) {
+      this.state = openOverlay(this.state, { ...overlay, cursor: lineStart(text, cursor) });
+      this.render();
+      return;
+    }
+    if (key.name === "end" || (key.ctrl && key.name === "e")) {
+      this.state = openOverlay(this.state, { ...overlay, cursor: lineEnd(text, cursor) });
+      this.render();
+      return;
+    }
+    if (key.name === "backspace") {
+      const next = deleteBackward(text, cursor);
+      this.setEditorText(overlay, next.text, next.cursor);
+      this.render();
+      return;
+    }
+    if (key.name === "delete") {
+      const next = deleteForward(text, cursor);
+      this.setEditorText(overlay, next.text, next.cursor);
+      this.render();
+      return;
+    }
+    if (key.ctrl && key.name === "u") {
+      const start = lineStart(text, cursor);
+      this.setEditorText(overlay, `${text.slice(0, start)}${text.slice(cursor)}`, start);
+      this.render();
+      return;
+    }
+    if (key.name === "return" || key.name === "enter" || key.name === "linefeed") {
+      if (!multiline) {
+        this.state = moveOverlay(openOverlay(this.state, { ...overlay, editor: "fields" }), 1);
+        this.render();
+        return;
+      }
+      const next = insertText(text, cursor, "\n");
+      this.setEditorText(overlay, next.text, next.cursor);
+      this.render();
+      return;
+    }
+    const typed = printableKeyText(key);
+    if (typed !== null) {
+      const next = insertText(text, cursor, typed);
+      this.setEditorText(overlay, next.text, next.cursor);
+      this.render();
+    }
+  }
+
   private handleOverlayKey(key: KeyEvent): void {
+    const overlay = this.state.overlay;
+    if (overlay === null) return;
+
+    if (
+      (overlay.kind === "create-issue" && overlay.editor !== "fields") ||
+      (overlay.kind === "create-project" && overlay.editor !== "fields") ||
+      (overlay.kind === "edit-issue" && overlay.editor !== "fields")
+    ) {
+      this.handleCreateEditorKey(key, overlay);
+      return;
+    }
+
+    if (this.state.overlaySearch.active) {
+      if (key.name === "escape") {
+        this.state = cancelOverlaySearch(this.state);
+        this.render();
+        return;
+      }
+      if (key.name === "return" || key.name === "enter") {
+        this.state = commitOverlaySearch(this.state);
+        void this.confirmOverlay();
+        return;
+      }
+      if (key.name === "up" || key.name === "down") {
+        this.state = moveOverlay(this.state, key.name === "up" ? -1 : 1);
+        this.render();
+        return;
+      }
+      if (key.name === "backspace") {
+        this.state = setOverlayQuery(this.state, this.state.overlaySearch.query.slice(0, -1));
+        this.render();
+        return;
+      }
+      if (key.ctrl && key.name === "u") {
+        this.state = setOverlayQuery(this.state, "");
+        this.render();
+        return;
+      }
+      if (
+        (key.name === "space" || key.sequence === " ") &&
+        !key.ctrl &&
+        !key.meta &&
+        (overlay.kind === "labels" || overlay.kind === "create-labels")
+      ) {
+        this.state = toggleSelectedLabel(this.state);
+        this.render();
+        return;
+      }
+      const typed = printableKeyText(key);
+      if (typed !== null) {
+        this.state = setOverlayQuery(this.state, `${this.state.overlaySearch.query}${typed}`);
+        this.render();
+      }
+      return;
+    }
+
+    if (isSearchTrigger(key) && overlaySupportsSearch(overlay)) {
+      this.state = startOverlaySearch(this.state);
+      this.render();
+      return;
+    }
+
+    if (isCreateSubmit(key)) {
+      if (overlay.kind === "edit-issue") {
+        void this.submitEditIssue(overlay.draft);
+        return;
+      }
+      if (overlay.kind === "create-issue") {
+        void this.submitCreateIssue(overlay.draft);
+        return;
+      }
+      if (overlay.kind === "create-project") {
+        void this.submitCreateProject(overlay.draft);
+        return;
+      }
+    }
+
     if (key.name === "q") {
-      if (this.state.overlay?.kind === "team-context" && this.state.activeTeamId === null) {
+      if (overlay.kind === "team-context" && this.state.activeTeamId === null) {
         this.quit();
+        return;
+      }
+      if (
+        overlay.kind === "create-issue" ||
+        overlay.kind === "create-project" ||
+        overlay.kind === "edit-issue"
+      ) {
+        this.setMessage("Press Esc to discard this draft", COLORS.dim);
         return;
       }
       this.state = closeOverlay(this.state);
     } else if (key.name === "escape") {
-      if (this.state.overlay?.kind === "team-context" && this.state.activeTeamId === null) {
+      if (overlay.kind === "team-context" && this.state.activeTeamId === null) {
         this.setMessage("Choose a team to continue", COLORS.error);
         return;
       }
-      this.state = closeOverlay(this.state);
+      if (overlay.kind === "create-choice") {
+        if (overlay.target === "issue") {
+          this.state = openOverlay(this.state, {
+            kind: "create-issue",
+            cursor: 0,
+            draft: overlay.draft,
+            focusedField: overlay.field,
+            editor: "fields",
+          });
+        } else {
+          this.state = openOverlay(this.state, {
+            kind: "create-project",
+            cursor: 0,
+            draft: overlay.draft,
+            focusedField: overlay.field,
+            editor: "fields",
+          });
+        }
+      } else if (overlay.kind === "create-labels") {
+        this.state = openOverlay(this.state, {
+          kind: "create-issue",
+          draft: overlay.draft,
+          focusedField: "labels",
+          editor: "fields",
+          cursor: 0,
+        });
+      } else {
+        this.state = closeOverlay(this.state);
+      }
     } else if (key.name === "up" || key.name === "k") this.state = moveOverlay(this.state, -1);
     else if (key.name === "down" || key.name === "j") this.state = moveOverlay(this.state, 1);
     else if (key.name === "space" || key.sequence === " ")
@@ -980,7 +1460,7 @@ class LinearTui {
       [
         ["my-issues", "1 My Issues"],
         ["teams", "2 Team Issues"],
-        ["cycles", "3 Cycles"],
+        ["cycles", "3 Cycle"],
         ["projects", "4 Projects"],
       ] satisfies [TopNav, string][]
     )
@@ -989,20 +1469,56 @@ class LinearTui {
     const team = activeTeam(this.state);
     const teamLabel = team === undefined ? "Team: Choose" : `Team: ${team.key}`;
     this.header.content = `${mock}linearctl  ${this.options.workspace.urlKey}  ${teamLabel}  ${nav}`;
+    let selectedLine: number | null = null;
     if (this.state.screen.kind === "issue-browser") {
       const visible = visibleIssues(this.state);
-      this.listBox.title = ` ${scopeTitle(this.state.screen.scope, this.state)} ${visible.length}/${this.state.issues.length} `;
-      this.list.content = issueListText(this.state, width);
+      this.listBox.title = ` ${scopeTitle(this.state.screen.scope, this.state)} ${visible.length}/${this.state.issues.length}${this.state.issuesHasMore ? "+" : ""} `;
+      const rows = issueListRows(this.state, width);
+      this.list.content = styledListContent(rows);
+      const index = rows.findIndex((row) => row.selected);
+      selectedLine = index < 0 ? null : index;
       this.detail.content = issueDetailText(selectedIssue(this.state));
     } else {
-      this.listBox.title = ` ${this.state.screen.catalog[0]?.toUpperCase()}${this.state.screen.catalog.slice(1)} `;
-      this.list.content = catalogListText(this.state, width);
+      const visible = visibleProjects(this.state);
+      const total = scopedProjects(this.state).length;
+      this.listBox.title = ` Projects ${visible.length}/${total}${this.state.projectsHasMore ? "+" : ""} `;
+      const rows = selectableTextRows(catalogListText(this.state, width));
+      this.list.content = styledListContent(rows);
+      const index = rows.findIndex((row) => row.selected);
+      selectedLine = index < 0 ? null : index;
       this.detail.content = catalogDetailText(selectedCatalogItem(this.state));
     }
+    this.list.scrollY = listScrollOffset(this.list.scrollY, this.list.height, selectedLine);
     this.detailBox.title = " Detail ";
+    const commentsIssue =
+      this.commentsView === null || this.state.screen.kind !== "issue-browser"
+        ? undefined
+        : selectedIssue(this.state);
+    if (this.commentsView !== null && this.commentsView.issueId !== commentsIssue?.id) {
+      // Selection moved on; drop the panel and its footer message together.
+      this.commentsView = null;
+      this.message = "";
+      this.messageColor = COLORS.dim;
+    }
+    if (this.commentsView !== null && commentsIssue !== undefined && this.state.overlay === null) {
+      this.detailBox.title = " Comments ";
+      this.detail.content = commentsText(commentsIssue, this.commentsView.page);
+    }
     if (this.state.overlay !== null) {
       this.detailBox.title = ` ${overlayTitle(this.state.overlay)} `;
-      this.detail.content = overlayText(this.state.overlay);
+      this.detail.content = overlayText(this.state, this.state.overlay);
+    }
+    const detailIdentity =
+      this.state.overlay !== null
+        ? `overlay:${this.state.overlay.kind}`
+        : this.commentsView !== null
+          ? `comments:${this.commentsView.issueId}`
+          : this.state.screen.kind === "issue-browser"
+            ? `issue:${selectedIssue(this.state)?.id ?? ""}`
+            : `catalog:${selectedCatalogItem(this.state)?.id ?? ""}`;
+    if (detailIdentity !== this.detailKey) {
+      this.detailKey = detailIdentity;
+      this.detailScroll.scrollTo(0);
     }
     this.helpBox.visible = this.mode === "help";
     this.helpSearch.content = `Search commands: ${this.helpQuery}█\nType to filter · Up/Down to scroll · Esc or ? to close`;
@@ -1013,7 +1529,7 @@ class LinearTui {
       `${this.options.mode === "mock" ? "MOCK  " : ""}${controls}`,
       `Filters: ${filterCount} · Group: ${
         this.state.groupBy === "none" ? "None" : DIMENSION_LABELS[this.state.groupBy]
-      } · ${this.message}`,
+      }${this.state.includeDone ? " · Done: shown" : ""} · ${this.message}`,
     ].join("\n");
     this.footer.fg =
       this.mode === "search" || this.mode === "help" ? COLORS.accent : this.messageColor;
@@ -1024,27 +1540,93 @@ class LinearTui {
     if (this.mode === "help") return "Help search is active";
     if (this.mode === "search")
       return `Search: ${this.state.query}█  Enter apply · Esc cancel · Ctrl+U clear`;
+    if (this.state.overlaySearch.active) {
+      const toggleHint =
+        this.state.overlay?.kind === "labels" || this.state.overlay?.kind === "create-labels"
+          ? "Space toggle · "
+          : "";
+      return `Filter: ${this.state.overlaySearch.query}█  Up/Down move · ${toggleHint}Enter confirm · Esc clear filter`;
+    }
     if (this.state.overlay?.kind === "labels")
-      return "Up/Down select · Space toggle · Enter save · Esc cancel";
+      return "Up/Down select · Space toggle · / filter · Enter save · Esc cancel";
+    if (
+      this.state.overlay?.kind === "create-issue" ||
+      this.state.overlay?.kind === "create-project"
+    )
+      return "j/k fields · Enter edit/open · Cmd/Ctrl+Enter or Ctrl+S create · Esc cancel";
+    if (this.state.overlay?.kind === "edit-issue")
+      return "j/k fields · Enter edit/save · Cmd/Ctrl+Enter or Ctrl+S save · Esc cancel";
+    if (
+      this.state.overlay?.kind === "create-choice" ||
+      this.state.overlay?.kind === "create-labels"
+    )
+      return "Up/Down select · / filter · Enter confirm · Esc back";
     if (this.state.overlay?.kind === "team-context" && this.state.activeTeamId === null)
       return "Up/Down select · Enter confirm · q quit";
-    if (this.state.overlay !== null) return "Up/Down select · Enter confirm · Esc cancel";
-    if (this.state.screen.kind === "catalog")
-      return "Up/Down select · Enter open issues · t change team · r reload · ? all commands · q quit";
-    return "Up/Down select · t change team · / search · f filter · g group · u copy URL · ? help";
+    if (this.state.overlay !== null)
+      return "Up/Down select · / filter · Enter confirm · Esc cancel";
+    if (this.state.screen.kind === "catalog") return CATALOG_CONTROLS;
+    return ISSUE_BROWSER_CONTROLS;
+  }
+
+  private async toggleComments(): Promise<void> {
+    if (this.state.screen.kind !== "issue-browser") {
+      this.setMessage("Open an issue view before reading comments", COLORS.error);
+      return this.render();
+    }
+    const issue = selectedIssue(this.state);
+    if (issue === undefined) {
+      this.setMessage("Select an issue to read its comments", COLORS.error);
+      return this.render();
+    }
+    if (this.commentsView?.issueId === issue.id) {
+      this.commentsView = null;
+      return this.render();
+    }
+    try {
+      const page = await this.options.client.getIssueComments(issue.id);
+      // A slow response must not clobber the comments of the issue selected since.
+      if (selectedIssue(this.state)?.id !== issue.id) return;
+      this.commentsView = { issueId: issue.id, page };
+      this.setMessage(
+        page.comments.length === 0
+          ? "No comments on this issue"
+          : `Loaded ${page.comments.length} comments (v to close)`,
+        COLORS.dim,
+      );
+    } catch (error) {
+      this.setMessage(this.errorMessage(error), COLORS.error);
+    }
+    this.render();
+  }
+
+  private async openIssueInBrowser(): Promise<void> {
+    try {
+      const opened = await openSelectedItemUrl(
+        this.state,
+        this.options.workspace.urlKey,
+        this.options.openUrl ?? openUrlInBrowser,
+      );
+      this.setMessage(
+        opened ? "URL opened in browser" : "Select an item before opening its URL",
+        opened ? COLORS.success : COLORS.error,
+      );
+    } catch (error) {
+      this.setMessage(`Could not open URL: ${this.errorMessage(error)}`, COLORS.error);
+    }
   }
 
   private copyIssueUrl(): void {
-    const url = selectedIssueUrl(this.state);
+    const url = selectedItemUrl(this.state, this.options.workspace.urlKey);
     if (url === null) {
-      this.setMessage("Select an issue before copying its URL", COLORS.error);
+      this.setMessage("Select an item before copying its URL", COLORS.error);
       return;
     }
     if (!this.renderer.copyToClipboardOSC52(url)) {
       this.setMessage("The terminal does not support clipboard copy", COLORS.error);
       return;
     }
-    this.setMessage("Issue URL copied", COLORS.success);
+    this.setMessage("URL copied", COLORS.success);
   }
 
   private setMessage(message: string, color: string): void {

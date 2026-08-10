@@ -3,16 +3,24 @@ import type {
   CycleRef,
   Issue,
   IssueChange,
+  IssueCreateInput,
+  IssueComment,
+  IssueCommentPage,
   IssueLabel,
+  IssuePage,
   IssueScope,
   Project,
+  ProjectCreateInput,
+  ProjectPage,
   ProjectRef,
   Team,
   UpdatedIssue,
   UserSummary,
   WorkflowState,
 } from "./domain";
-import type { AuthStatus, LinearClient } from "./linear-client";
+import { priorityLabel } from "./domain";
+import type { AuthStatus, IssueReadOptions, LinearClient } from "./linear-client";
+import { unreachable } from "./unreachable";
 
 type CycleDefinition = Cycle;
 type ProjectDefinition = Project;
@@ -22,7 +30,7 @@ const MOCK_AUTH_STATUS: AuthStatus = {
   workspace: {
     id: "mock-workspace",
     name: "Linearctl Mock Workspace",
-    urlKey: "fs0414",
+    urlKey: "sample-workspace",
   },
 };
 
@@ -125,7 +133,14 @@ const APP_DONE: WorkflowState = {
   color: "#22C55E",
   position: 4,
 };
-const APP_STATES = [APP_BACKLOG, APP_READY, APP_PROGRESS, APP_REVIEW, APP_DONE];
+const APP_CANCELED: WorkflowState = {
+  id: "app-canceled",
+  name: "Canceled",
+  type: "canceled",
+  color: "#6B7280",
+  position: 5,
+};
+const APP_STATES = [APP_BACKLOG, APP_READY, APP_PROGRESS, APP_REVIEW, APP_DONE, APP_CANCELED];
 
 const PLATFORM_TRIAGE: WorkflowState = {
   id: "plat-triage",
@@ -244,7 +259,21 @@ const ONCALL_AUTOMATION_PROJECT: ProjectRef = {
   slugId: "oncall-automation",
 };
 
+const APP_PREVIOUS_CYCLE: CycleRef = {
+  id: "mock-cycle-app-23",
+  number: 23,
+  name: "2026 Summer 3",
+};
+
 const MOCK_CYCLE_DEFINITIONS: CycleDefinition[] = [
+  {
+    ...APP_PREVIOUS_CYCLE,
+    startsAt: "2026-07-20T00:00:00.000Z",
+    endsAt: "2026-08-02T23:59:59.000Z",
+    progress: 1,
+    isActive: false,
+    team: APP_TEAM,
+  },
   {
     ...APP_CYCLE,
     startsAt: "2026-08-03T00:00:00.000Z",
@@ -275,7 +304,7 @@ const MOCK_PROJECT_DEFINITIONS: ProjectDefinition[] = [
   {
     ...MOBILE_RENEWAL_PROJECT,
     description: "Shorten the mobile purchase path and improve performance and usability.",
-    url: "https://linear.example.invalid/fs0414/project/mobile-experience-renewal",
+    url: "https://linear.example.invalid/sample-workspace/project/mobile-experience-renewal",
     progress: 0.62,
     health: "onTrack",
     startDate: "2026-06-15",
@@ -287,7 +316,7 @@ const MOCK_PROJECT_DEFINITIONS: ProjectDefinition[] = [
   {
     ...RELIABILITY_PROJECT,
     description: "Reduce incident recovery time and continuously measure critical-path uptime.",
-    url: "https://linear.example.invalid/fs0414/project/reliability-program",
+    url: "https://linear.example.invalid/sample-workspace/project/reliability-program",
     progress: 0.38,
     health: "atRisk",
     startDate: null,
@@ -299,7 +328,7 @@ const MOCK_PROJECT_DEFINITIONS: ProjectDefinition[] = [
   {
     ...GROWTH_EXPERIMENTS_PROJECT,
     description: "Standardize experiment assignment and measurement on a safe shared platform.",
-    url: "https://linear.example.invalid/fs0414/project/growth-experiment-platform",
+    url: "https://linear.example.invalid/sample-workspace/project/growth-experiment-platform",
     progress: 0.18,
     health: null,
     startDate: "2026-08-20",
@@ -311,7 +340,7 @@ const MOCK_PROJECT_DEFINITIONS: ProjectDefinition[] = [
   {
     ...ONCALL_AUTOMATION_PROJECT,
     description: "Automate routine incident response and stakeholder notifications.",
-    url: "https://linear.example.invalid/fs0414/project/oncall-automation",
+    url: "https://linear.example.invalid/sample-workspace/project/oncall-automation",
     progress: 0.44,
     health: "offTrack",
     startDate: "2026-05-08",
@@ -379,6 +408,12 @@ function issueMetadata(identifier: string): IssueMetadata {
       };
     case "GROW-304":
       return { priority: 3, estimate: 3, assignee: MEI_USER, labels: [GROWTH_LABEL] };
+    case "APP-106":
+      return { priority: 2, estimate: 2, assignee: YUTA_USER, labels: [BUG_LABEL, APP_LABEL] };
+    case "APP-107":
+      return { priority: 3, estimate: 2, assignee: MOCK_VIEWER_USER, labels: [APP_LABEL] };
+    case "PLAT-206":
+      return { priority: 4, estimate: 1, assignee: REN_USER, labels: [PLATFORM_LABEL] };
     default:
       return { priority: 0, estimate: null, assignee: null, labels: [] };
   }
@@ -391,7 +426,7 @@ function defineIssue(
     ...issueMetadata(input.identifier),
     ...input,
     labelsComplete: true,
-    url: `https://linear.example.invalid/fs0414/issue/${input.identifier}`,
+    url: `https://linear.example.invalid/sample-workspace/issue/${input.identifier}`,
   };
 }
 
@@ -576,7 +611,74 @@ const MOCK_ISSUES: Issue[] = [
     cycle: null,
     project: null,
   }),
+  defineIssue({
+    id: "mock-issue-app-106",
+    identifier: "APP-106",
+    title: "Fix cart badge count after login",
+    description: "The cart badge showed the previous session's count until a manual refresh.",
+    priorityLabel: "High",
+    updatedAt: "2026-08-01T09:00:00.000Z",
+    state: APP_DONE,
+    team: APP_TEAM,
+    cycle: APP_PREVIOUS_CYCLE,
+    project: MOBILE_RENEWAL_PROJECT,
+  }),
+  defineIssue({
+    id: "mock-issue-app-107",
+    identifier: "APP-107",
+    title: "Prototype the quick-reorder shortcut",
+    description: "Superseded by the checkout redesign; keeping the findings in the doc.",
+    priorityLabel: "Medium",
+    updatedAt: "2026-08-02T08:45:00.000Z",
+    state: APP_CANCELED,
+    team: APP_TEAM,
+    cycle: APP_CYCLE,
+    project: null,
+  }),
+  defineIssue({
+    id: "mock-issue-plat-206",
+    identifier: "PLAT-206",
+    title: "Retire the legacy metrics exporter",
+    description: "The exporter was replaced by the managed pipeline and can be shut down.",
+    priorityLabel: "Low",
+    updatedAt: "2026-07-30T15:00:00.000Z",
+    state: PLATFORM_RESOLVED,
+    team: PLATFORM_TEAM,
+    cycle: null,
+    project: RELIABILITY_PROJECT,
+  }),
 ].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+
+const MOCK_COMMENTS = new Map<string, IssueComment[]>([
+  [
+    "mock-issue-app-101",
+    [
+      {
+        id: "mock-comment-app-101-1",
+        body: "Traced the slow render to the pricing call; caching cuts it to ~400ms.",
+        createdAt: "2026-08-05T09:12:00.000Z",
+        author: "Aiko Takahashi",
+      },
+      {
+        id: "mock-comment-app-101-2",
+        body: "Deploy preview is up: https://preview.example.invalid/checkout",
+        createdAt: "2026-08-06T02:30:00.000Z",
+        author: null,
+      },
+    ],
+  ],
+  [
+    "mock-issue-plat-201",
+    [
+      {
+        id: "mock-comment-plat-201-1",
+        body: "Staging failover completed in 42s; runbook updated.",
+        createdAt: "2026-08-04T11:00:00.000Z",
+        author: "Ren Sato",
+      },
+    ],
+  ],
+]);
 
 function clone<T>(value: T): T {
   return structuredClone(value);
@@ -585,6 +687,9 @@ function clone<T>(value: T): T {
 function updatedIssue(issue: Issue): UpdatedIssue {
   return clone({
     id: issue.id,
+    title: issue.title,
+    description: issue.description,
+    updatedAt: issue.updatedAt,
     state: issue.state,
     cycle: issue.cycle,
     project: issue.project,
@@ -616,8 +721,10 @@ export class MockLinearClient implements LinearClient {
     return clone([APP_TEAM, PLATFORM_TEAM, GROWTH_TEAM]);
   }
 
-  async getIssues(scope: IssueScope): Promise<Issue[]> {
+  async getIssues(scope: IssueScope, options?: IssueReadOptions): Promise<IssuePage> {
+    const excluded = options?.includeDone === true ? [] : ["completed", "canceled"];
     const issues = this.issues.filter((issue) => {
+      if (excluded.includes(issue.state.type)) return false;
       switch (scope.kind) {
         case "assigned-to-me":
           return (
@@ -626,24 +733,48 @@ export class MockLinearClient implements LinearClient {
           );
         case "team":
           return issue.team.id === scope.teamId;
+        case "current-cycle": {
+          const cycle = this.cycleDefinitions.find(
+            (item) => item.isActive && item.team.id === scope.teamId,
+          );
+          return cycle !== undefined && issue.cycle?.id === cycle.id;
+        }
         case "cycle":
           return issue.cycle?.id === scope.cycleId;
         case "project":
           return issue.project?.id === scope.projectId;
+        default:
+          return unreachable(scope);
       }
     });
-    return clone(issues);
+    return { issues: clone(issues), hasMore: false };
   }
 
+  private readonly membersByTeam = new Map<string, UserSummary[]>([
+    [APP_TEAM.id, [MOCK_VIEWER_USER, AIKO_USER, YUTA_USER]],
+    [PLATFORM_TEAM.id, [MOCK_VIEWER_USER, REN_USER]],
+    [GROWTH_TEAM.id, [MOCK_VIEWER_USER, MEI_USER, HARU_USER]],
+  ]);
+
   async getTeamMembers(teamId: string): Promise<UserSummary[]> {
-    const membersByTeam = new Map<string, UserSummary[]>([
-      [APP_TEAM.id, [MOCK_VIEWER_USER, AIKO_USER, YUTA_USER]],
-      [PLATFORM_TEAM.id, [MOCK_VIEWER_USER, REN_USER]],
-      [GROWTH_TEAM.id, [MOCK_VIEWER_USER, MEI_USER, HARU_USER]],
-    ]);
-    const members = membersByTeam.get(teamId);
+    const members = this.membersByTeam.get(teamId);
     if (members === undefined) throw new Error(`Mock team not found: ${teamId}`);
     return clone(members);
+  }
+
+  /** Resolves label IDs against the workspace, enforcing the owning-team boundary. */
+  private resolveTeamLabels(labelIds: readonly string[], teamId: string): IssueLabel[] {
+    const labels = labelIds.map((labelId) =>
+      this.labels.find((candidate) => candidate.id === labelId),
+    );
+    if (
+      labels.some(
+        (label) => label === undefined || (label.team !== null && label.team.id !== teamId),
+      )
+    ) {
+      throw new Error("Mock label not found or does not belong to the issue team");
+    }
+    return labels.flatMap((label) => (label === undefined ? [] : [clone(label)]));
   }
 
   async getIssueLabels(): Promise<IssueLabel[]> {
@@ -651,21 +782,39 @@ export class MockLinearClient implements LinearClient {
   }
 
   async getCurrentCycles(teamId?: string): Promise<Cycle[]> {
+    const active = this.cycleDefinitions.filter((cycle) => cycle.isActive);
     return clone(
-      teamId === undefined
-        ? this.cycleDefinitions
-        : this.cycleDefinitions.filter((cycle) => cycle.team.id === teamId),
+      teamId === undefined ? active : active.filter((cycle) => cycle.team.id === teamId),
     );
   }
 
-  async getActiveProjects(teamId?: string): Promise<Project[]> {
+  async getTeamCycles(teamId: string): Promise<Cycle[]> {
     return clone(
+      this.cycleDefinitions
+        .filter((cycle) => cycle.team.id === teamId)
+        .sort(
+          (left, right) =>
+            Number(right.isActive) - Number(left.isActive) || right.number - left.number,
+        ),
+    );
+  }
+
+  async getIssueComments(issueId: string): Promise<IssueCommentPage> {
+    if (!this.issues.some((issue) => issue.id === issueId)) {
+      throw new Error(`Mock issue not found: ${issueId}`);
+    }
+    return { comments: clone(MOCK_COMMENTS.get(issueId) ?? []), hasMore: false };
+  }
+
+  async getActiveProjects(teamId?: string): Promise<ProjectPage> {
+    const projects = clone(
       teamId === undefined
         ? this.projectDefinitions
         : this.projectDefinitions.filter((project) =>
             project.teams.some((team) => team.id === teamId),
           ),
     );
+    return { projects, hasMore: false };
   }
 
   async getWorkflowStates(teamId: string): Promise<WorkflowState[]> {
@@ -679,6 +828,11 @@ export class MockLinearClient implements LinearClient {
     if (issue === undefined) throw new Error(`Mock issue not found: ${change.issueId}`);
 
     switch (change.kind) {
+      case "content":
+        if (change.title.trim().length === 0) throw new Error("Mock issue title is required");
+        issue.title = change.title.trim();
+        issue.description = change.description.length === 0 ? null : change.description;
+        break;
       case "status": {
         const state = this.statesByTeam
           .get(issue.team.id)
@@ -730,26 +884,128 @@ export class MockLinearClient implements LinearClient {
           throw new Error(`Invalid mock priority: ${change.priority}`);
         }
         issue.priority = change.priority;
-        issue.priorityLabel =
-          ["No priority", "Urgent", "High", "Medium", "Low"][change.priority] ?? "No priority";
+        issue.priorityLabel = priorityLabel(change.priority);
         break;
-      case "labels": {
-        const labels = change.labelIds.map((labelId) =>
-          this.labels.find((candidate) => candidate.id === labelId),
-        );
-        if (
-          labels.some(
-            (label) =>
-              label === undefined || (label.team !== null && label.team.id !== issue.team.id),
-          )
-        ) {
-          throw new Error("Mock label not found or does not belong to the issue team");
-        }
-        issue.labels = labels.flatMap((label) => (label === undefined ? [] : [clone(label)]));
+      case "labels":
+        issue.labels = this.resolveTeamLabels(change.labelIds, issue.team.id);
         break;
-      }
+      default:
+        return unreachable(change);
     }
 
     return updatedIssue(issue);
+  }
+
+  async createIssue(input: IssueCreateInput): Promise<Issue> {
+    const team = [APP_TEAM, PLATFORM_TEAM, GROWTH_TEAM].find((item) => item.id === input.teamId);
+    if (team === undefined) throw new Error(`Mock team not found: ${input.teamId}`);
+    if (input.title.trim().length === 0) throw new Error("Mock issue title is required");
+    if (!Number.isInteger(input.priority) || input.priority < 0 || input.priority > 4) {
+      throw new Error(`Invalid mock priority: ${input.priority}`);
+    }
+
+    const states = this.statesByTeam.get(team.id) ?? [];
+    const state =
+      input.stateId === null
+        ? (states.find((candidate) => candidate.type === "backlog") ?? states[0])
+        : states.find((candidate) => candidate.id === input.stateId);
+    if (state === undefined) throw new Error(`Mock status not found: ${input.stateId}`);
+
+    let assignee: UserSummary | null = null;
+    if (input.assigneeId !== null) {
+      const member = (await this.getTeamMembers(team.id)).find(
+        (candidate) => candidate.id === input.assigneeId,
+      );
+      if (member === undefined) throw new Error(`Mock assignee not found: ${input.assigneeId}`);
+      assignee = clone(member);
+    }
+
+    let cycle: CycleRef | null = null;
+    if (input.cycleId !== null) {
+      const found = this.cycleDefinitions.find((candidate) => candidate.id === input.cycleId);
+      if (found === undefined || found.team.id !== team.id) {
+        throw new Error(`Mock cycle not found: ${input.cycleId}`);
+      }
+      cycle = { id: found.id, number: found.number, name: found.name };
+    }
+
+    let project: ProjectRef | null = null;
+    if (input.projectId !== null) {
+      const found = this.projectDefinitions.find((candidate) => candidate.id === input.projectId);
+      if (found === undefined || !found.teams.some((item) => item.id === team.id)) {
+        throw new Error(`Mock project not found: ${input.projectId}`);
+      }
+      project = { id: found.id, name: found.name, slugId: found.slugId };
+    }
+
+    const labels = this.resolveTeamLabels(input.labelIds, team.id);
+
+    const serial =
+      this.issues
+        .filter((issue) => issue.team.id === team.id)
+        .map((issue) => Number(issue.identifier.split("-")[1] ?? "0"))
+        .reduce((max, value) => Math.max(max, Number.isFinite(value) ? value : 0), 100) + 1;
+    const identifier = `${team.key}-${serial}`;
+    const created: Issue = {
+      id: `mock-issue-created-${serial}`,
+      identifier,
+      title: input.title.trim(),
+      description: input.description.trim().length === 0 ? null : input.description,
+      priority: input.priority,
+      priorityLabel: priorityLabel(input.priority),
+      estimate: null,
+      assignee,
+      labels,
+      labelsComplete: true,
+      url: `https://linear.example.invalid/sample-workspace/issue/${identifier}`,
+      updatedAt: new Date().toISOString(),
+      state: clone(state),
+      team: clone(team),
+      cycle,
+      project,
+    };
+    this.issues.unshift(created);
+    return clone(created);
+  }
+
+  async createProject(input: ProjectCreateInput): Promise<Project> {
+    if (input.name.trim().length === 0) throw new Error("Mock project name is required");
+    if (input.teamIds.length === 0) throw new Error("Mock project requires at least one team");
+    const teams = input.teamIds.map((teamId) =>
+      [APP_TEAM, PLATFORM_TEAM, GROWTH_TEAM].find((team) => team.id === teamId),
+    );
+    if (teams.some((team) => team === undefined)) {
+      throw new Error("Mock project team not found");
+    }
+
+    let lead: UserSummary | null = null;
+    if (input.leadId !== null) {
+      const found = this.users.find((user) => user.id === input.leadId);
+      if (found === undefined) throw new Error(`Mock lead not found: ${input.leadId}`);
+      lead = clone(found);
+    }
+
+    const slugBase = input.name
+      .trim()
+      .toLocaleLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+    const slugId = `${slugBase || "project"}-${this.projectDefinitions.length + 1}`;
+    const created: Project = {
+      id: `mock-project-created-${this.projectDefinitions.length + 1}`,
+      name: input.name.trim(),
+      slugId,
+      description: input.description.trim(),
+      url: `https://linear.example.invalid/sample-workspace/project/${slugId}`,
+      progress: 0,
+      health: null,
+      startDate: null,
+      targetDate: null,
+      status: { id: "planned", name: "Planned", type: "planned", color: "#95a2b3" },
+      lead,
+      teams: teams.flatMap((team) => (team === undefined ? [] : [clone(team)])),
+    };
+    this.projectDefinitions.unshift(created);
+    return clone(created);
   }
 }

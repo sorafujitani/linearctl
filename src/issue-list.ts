@@ -1,19 +1,7 @@
-import type { Issue } from "./domain";
+import { matchesSearch, type Issue } from "./domain";
+import { unreachable } from "./unreachable";
 
-export type IssueDimension =
-  | "status"
-  | "assignee"
-  | "priority"
-  | "team"
-  | "cycle"
-  | "project"
-  | "label";
-
-export type IssueGroupDimension = "none" | IssueDimension;
-export type IssueFilters = Partial<Record<IssueDimension, string>>;
-
-export const NONE_VALUE = "__none__";
-export const ISSUE_DIMENSIONS: readonly IssueDimension[] = [
+export const ISSUE_DIMENSIONS = [
   "status",
   "assignee",
   "priority",
@@ -21,7 +9,13 @@ export const ISSUE_DIMENSIONS: readonly IssueDimension[] = [
   "cycle",
   "project",
   "label",
-];
+] as const;
+
+export type IssueDimension = (typeof ISSUE_DIMENSIONS)[number];
+export type IssueGroupDimension = "none" | IssueDimension;
+export type IssueFilters = Partial<Record<IssueDimension, string>>;
+
+export const NONE_VALUE = "__none__";
 
 export interface IssueGroup {
   key: string;
@@ -30,9 +24,7 @@ export interface IssueGroup {
 }
 
 function includesText(issue: Issue, query: string): boolean {
-  const normalized = query.trim().toLocaleLowerCase();
-  if (normalized.length === 0) return true;
-  return [
+  return matchesSearch(query, [
     issue.identifier,
     issue.title,
     issue.description ?? "",
@@ -43,7 +35,7 @@ function includesText(issue: Issue, query: string): boolean {
     issue.cycle?.name ?? "",
     issue.project?.name ?? "",
     ...issue.labels.map((label) => label.name),
-  ].some((value) => value.toLocaleLowerCase().includes(normalized));
+  ]);
 }
 
 function matchesFilter(issue: Issue, dimension: IssueDimension, value: string): boolean {
@@ -64,6 +56,8 @@ function matchesFilter(issue: Issue, dimension: IssueDimension, value: string): 
       return value === NONE_VALUE
         ? issue.labels.length === 0
         : issue.labels.some((label) => label.id === value);
+    default:
+      return unreachable(dimension);
   }
 }
 
@@ -108,6 +102,8 @@ function groupValues(
       return issue.labels.length === 0
         ? [{ key: NONE_VALUE, label: "No labels" }]
         : issue.labels.map((label) => ({ key: label.id, label: label.name }));
+    default:
+      return unreachable(dimension);
   }
 }
 

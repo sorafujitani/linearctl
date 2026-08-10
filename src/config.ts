@@ -35,7 +35,7 @@ export function configFilePath(
   env: Record<string, string | undefined>,
   userHome = homedir(),
 ): string {
-  const configHome = env.XDG_CONFIG_HOME?.trim() || join(userHome, ".config");
+  const configHome = env["XDG_CONFIG_HOME"]?.trim() || join(userHome, ".config");
   return join(configHome, "linearctl", "config.json");
 }
 
@@ -82,7 +82,7 @@ export function parseTeamKey(value: string): string {
 }
 
 export function readApiKey(env: Record<string, string | undefined>): string {
-  const result = v.safeParse(apiKeySchema, env.LINEAR_API_KEY);
+  const result = v.safeParse(apiKeySchema, env["LINEAR_API_KEY"]);
   if (!result.success) {
     throw new Error(result.issues[0]?.message ?? "Check LINEAR_API_KEY.");
   }

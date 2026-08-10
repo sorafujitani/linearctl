@@ -8,19 +8,19 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/cli.ts",
-    "dev:mock": "bun run src/cli.ts --mock --workspace fs0414",
-    "auth:mock": "bun run src/cli.ts auth status --mock --workspace fs0414",
+    "dev:mock": "bun run src/cli.ts --mock --workspace sample-workspace",
+    "auth:mock": "bun run src/cli.ts auth status --mock --workspace sample-workspace",
     "check": "vp check",
     "check:fix": "vp check --fix",
     "test": "vp test --run",
     "test:watch": "vp test watch",
     "test:coverage": "vp test run --coverage",
-    "typecheck": "vp check --no-fmt --no-lint",
+    "typecheck": "tsc --noEmit",
     "format": "vp fmt --write",
     "build": "bun run scripts/build.ts",
     "binary": "bun run scripts/build.ts",
     "smoke": "bun run scripts/smoke.ts",
-    "verify": "vp run check && vp run test && vp run build && vp run smoke",
+    "verify": "vp run check && vp run typecheck && vp run test && vp run build && vp run smoke",
     "release:prepare": "bun install --os='*' --cpu='*' @opentui/core@0.5.1"
   },
   "dependencies": {

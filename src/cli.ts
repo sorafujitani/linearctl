@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 
 import { parseArgs, UsageError } from "./args";
+import { authStatusJson, authStatusText, issueListJson, issueListText } from "./cli-output";
 import { createClient } from "./client-factory";
 import { loadUserConfig } from "./config";
+import type { IssueScope } from "./domain";
 import { assertWorkspace } from "./linear-client";
 import { runTui } from "./tui";
 import { VERSION } from "./version";
@@ -11,7 +13,8 @@ const HELP = `linearctl - Linear terminal UI
 
 Usage:
   linearctl [--mock] [--workspace <slug>] [--team <key>]
-  linearctl auth status [--mock] --workspace <slug>
+  linearctl auth status [--mock] --workspace <slug> [--json]
+  linearctl issue list [--mock] [--workspace <slug>] [--team <key>] [--mine] [--json]
   linearctl --help
   linearctl --version
 
@@ -24,7 +27,11 @@ Config:
 
 Options:
   --workspace <slug>  Verify the connected workspace urlKey
-  --team <key>        Prefer this Team in Team, Cycle, and Project catalogs
+  --team <key>        Prefer this Team in Team, Cycle, and Project catalogs;
+                      scope issue list to this team's issues
+  --mine              issue list: narrow --team to your own assignments
+                      (without --team the list is already yours)
+  --json              Print machine-readable JSON (auth status, issue list)
   --mock              Use mock data only (no API key or network)
   -h, --help          Show help
   -V, --version       Show version
@@ -81,14 +88,27 @@ async function main(): Promise<void> {
 
   if (command.kind === "auth-status") {
     process.stdout.write(
-      [
-        command.connection.mode === "mock"
-          ? "Authentication: MOCK (synthetic data, no API key or network)"
-          : "Authentication: OK",
-        `User: ${status.viewer.name} <${status.viewer.email}>`,
-        `workspace: ${status.workspace.name} (${status.workspace.urlKey})`,
-      ].join("\n") + "\n",
+      command.json
+        ? authStatusJson(status, command.connection.mode)
+        : authStatusText(status, command.connection.mode),
     );
+    return;
+  }
+
+  if (command.kind === "issue-list") {
+    let scope: IssueScope = { kind: "assigned-to-me" };
+    if (command.team !== undefined) {
+      const teams = await client.getTeams();
+      const team = teams.find(
+        (candidate) => candidate.key.toLocaleLowerCase() === command.team?.toLocaleLowerCase(),
+      );
+      if (team === undefined) fail(`Team not found: ${command.team}`);
+      scope = command.mine
+        ? { kind: "assigned-to-me", teamId: team.id }
+        : { kind: "team", teamId: team.id };
+    }
+    const page = await client.getIssues(scope);
+    process.stdout.write(command.json ? issueListJson(page) : issueListText(page));
     return;
   }
 

@@ -4,9 +4,14 @@ import type {
   Cycle,
   Issue,
   IssueChange,
+  IssueCreateInput,
+  IssueCommentPage,
   IssueLabel,
+  IssuePage,
   IssueScope,
   Project,
+  ProjectCreateInput,
+  ProjectPage,
   Team,
   UpdatedIssue,
   UserSummary,
@@ -14,8 +19,10 @@ import type {
   WorkflowState,
   Workspace,
 } from "./domain";
+import { unreachable } from "./unreachable";
 
 const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
+const REQUEST_TIMEOUT_MS = 15_000;
 
 const graphqlErrorSchema = v.object({
   message: v.string(),
@@ -107,6 +114,9 @@ const projectSchema = v.object({
 });
 const updatedIssueSchema = v.object({
   id: v.string(),
+  title: v.string(),
+  description: v.nullable(v.string()),
+  updatedAt: v.string(),
   state: workflowStateSchema,
   cycle: v.nullable(cycleRefSchema),
   project: v.nullable(projectRefSchema),
@@ -119,10 +129,19 @@ const updatedIssueSchema = v.object({
 });
 
 const authStatusSchema = v.object({ viewer: viewerSchema });
-const assignedIssuesSchema = v.object({
-  viewer: v.object({ assignedIssues: v.object({ nodes: v.array(issueSchema) }) }),
+const pageInfoSchema = v.object({ hasNextPage: v.boolean() });
+const issueConnectionSchema = v.object({
+  nodes: v.array(issueSchema),
+  pageInfo: pageInfoSchema,
 });
-const scopedIssuesSchema = v.object({ issues: v.object({ nodes: v.array(issueSchema) }) });
+const projectConnectionSchema = v.object({
+  nodes: v.array(projectSchema),
+  pageInfo: pageInfoSchema,
+});
+const assignedIssuesSchema = v.object({
+  viewer: v.object({ assignedIssues: issueConnectionSchema }),
+});
+const scopedIssuesSchema = v.object({ issues: issueConnectionSchema });
 const teamsSchema = v.object({ teams: v.object({ nodes: v.array(teamSchema) }) });
 const teamMembersSchema = v.object({
   team: v.object({ members: v.object({ nodes: v.array(userSummarySchema) }) }),
@@ -134,11 +153,29 @@ const currentCyclesSchema = v.object({
 const teamCurrentCycleSchema = v.object({
   team: v.object({ activeCycle: v.nullable(cycleSchema) }),
 });
+const teamCyclesSchema = v.object({
+  team: v.object({ cycles: v.object({ nodes: v.array(cycleSchema) }) }),
+});
+const issueCommentsSchema = v.object({
+  issue: v.object({
+    comments: v.object({
+      nodes: v.array(
+        v.object({
+          id: v.string(),
+          body: v.string(),
+          createdAt: v.string(),
+          user: v.nullable(userSummarySchema),
+        }),
+      ),
+      pageInfo: pageInfoSchema,
+    }),
+  }),
+});
 const activeProjectsSchema = v.object({
-  projects: v.object({ nodes: v.array(projectSchema) }),
+  projects: projectConnectionSchema,
 });
 const teamActiveProjectsSchema = v.object({
-  team: v.object({ projects: v.object({ nodes: v.array(projectSchema) }) }),
+  team: v.object({ projects: projectConnectionSchema }),
 });
 const workflowStatesSchema = v.object({
   workflowStates: v.object({ nodes: v.array(workflowStateSchema) }),
@@ -146,15 +183,27 @@ const workflowStatesSchema = v.object({
 const updateIssueSchema = v.object({
   issueUpdate: v.object({ success: v.boolean(), issue: updatedIssueSchema }),
 });
+const createIssueSchema = v.object({
+  issueCreate: v.object({ success: v.boolean(), issue: v.nullable(issueSchema) }),
+});
+const createProjectSchema = v.object({
+  projectCreate: v.object({ success: v.boolean(), project: v.nullable(projectSchema) }),
+});
 
-export type LinearApiErrorKind = "network" | "http" | "graphql" | "rate-limit" | "invalid-response";
+export type LinearApiErrorKind =
+  | "network"
+  | "timeout"
+  | "http"
+  | "graphql"
+  | "rate-limit"
+  | "invalid-response";
 
 export class LinearApiError extends Error {
-  constructor(
-    public readonly kind: LinearApiErrorKind,
-    message: string,
-  ) {
+  readonly kind: LinearApiErrorKind;
+
+  constructor(kind: LinearApiErrorKind, message: string) {
     super(message);
+    this.kind = kind;
     this.name = "LinearApiError";
   }
 }
@@ -164,16 +213,25 @@ export interface AuthStatus {
   workspace: Workspace;
 }
 
+export interface IssueReadOptions {
+  /** Include completed and canceled issues; the default hides them. */
+  includeDone?: boolean;
+}
+
 export interface LinearClient {
   getAuthStatus(): Promise<AuthStatus>;
   getTeams(): Promise<Team[]>;
-  getIssues(scope: IssueScope): Promise<Issue[]>;
+  getIssues(scope: IssueScope, options?: IssueReadOptions): Promise<IssuePage>;
   getTeamMembers(teamId: string): Promise<UserSummary[]>;
   getIssueLabels(): Promise<IssueLabel[]>;
   getCurrentCycles(teamId?: string): Promise<Cycle[]>;
-  getActiveProjects(teamId?: string): Promise<Project[]>;
+  getTeamCycles(teamId: string): Promise<Cycle[]>;
+  getIssueComments(issueId: string): Promise<IssueCommentPage>;
+  getActiveProjects(teamId?: string): Promise<ProjectPage>;
   getWorkflowStates(teamId: string): Promise<WorkflowState[]>;
   updateIssue(change: IssueChange): Promise<UpdatedIssue>;
+  createIssue(input: IssueCreateInput): Promise<Issue>;
+  createProject(input: ProjectCreateInput): Promise<Project>;
 }
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -198,23 +256,38 @@ const ISSUE_FIELDS = `
   }
 `;
 
-const ASSIGNED_ISSUES_QUERY = `
+const PROJECT_FIELDS = `
+  id name description slugId url progress health startDate targetDate
+  status { id name type color }
+  lead { id name }
+  teams(first: 20) { nodes { id name key } }
+`;
+
+const DONE_STATE_FILTER = 'state: { type: { nin: ["completed", "canceled"] } }';
+
+/**
+ * The done filter is included or omitted per query instead of sent as a
+ * variable: an empty nin list must not reach the server, where "exclude
+ * nothing" semantics are not guaranteed.
+ */
+const assignedIssuesQuery = (includeDone: boolean): string => `
   query AssignedIssues {
     viewer {
       assignedIssues(
         first: 50
         orderBy: updatedAt
-        filter: { state: { type: { nin: ["completed", "canceled"] } } }
+        ${includeDone ? "" : `filter: { ${DONE_STATE_FILTER} }`}
       ) {
         nodes {
           ${ISSUE_FIELDS}
         }
+        pageInfo { hasNextPage }
       }
     }
   }
 `;
 
-const TEAM_ASSIGNED_ISSUES_QUERY = `
+const teamAssignedIssuesQuery = (includeDone: boolean): string => `
   query TeamAssignedIssues($teamId: ID!) {
     viewer {
       assignedIssues(
@@ -222,41 +295,29 @@ const TEAM_ASSIGNED_ISSUES_QUERY = `
         orderBy: updatedAt
         filter: {
           team: { id: { eq: $teamId } }
-          state: { type: { nin: ["completed", "canceled"] } }
+          ${includeDone ? "" : DONE_STATE_FILTER}
         }
       ) {
         nodes {
           ${ISSUE_FIELDS}
         }
+        pageInfo { hasNextPage }
       }
     }
   }
 `;
 
-const TEAM_ISSUES_QUERY = `
-  query TeamIssues($teamId: ID!) {
+const scopedIssuesQuery = (
+  name: string,
+  variable: string,
+  field: string,
+  includeDone: boolean,
+): string => `
+  query ${name}($${variable}: ID!) {
     issues(first: 50, orderBy: updatedAt, filter: {
-      team: { id: { eq: $teamId } }
-      state: { type: { nin: ["completed", "canceled"] } }
-    }) { nodes { ${ISSUE_FIELDS} } }
-  }
-`;
-
-const CYCLE_ISSUES_QUERY = `
-  query CycleIssues($cycleId: ID!) {
-    issues(first: 50, orderBy: updatedAt, filter: {
-      cycle: { id: { eq: $cycleId } }
-      state: { type: { nin: ["completed", "canceled"] } }
-    }) { nodes { ${ISSUE_FIELDS} } }
-  }
-`;
-
-const PROJECT_ISSUES_QUERY = `
-  query ProjectIssues($projectId: ID!) {
-    issues(first: 50, orderBy: updatedAt, filter: {
-      project: { id: { eq: $projectId } }
-      state: { type: { nin: ["completed", "canceled"] } }
-    }) { nodes { ${ISSUE_FIELDS} } }
+      ${field}: { id: { eq: $${variable} } }
+      ${includeDone ? "" : DONE_STATE_FILTER}
+    }) { nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage } }
   }
 `;
 
@@ -298,6 +359,30 @@ const TEAM_CURRENT_CYCLE_QUERY = `
   }
 `;
 
+const TEAM_CYCLES_QUERY = `
+  query TeamCycles($teamId: String!) {
+    team(id: $teamId) {
+      cycles(first: 25, orderBy: updatedAt) {
+        nodes {
+          id number name startsAt endsAt progress isActive
+          team { id name key }
+        }
+      }
+    }
+  }
+`;
+
+const ISSUE_COMMENTS_QUERY = `
+  query IssueComments($issueId: String!) {
+    issue(id: $issueId) {
+      comments(first: 50, orderBy: createdAt) {
+        nodes { id body createdAt user { id name } }
+        pageInfo { hasNextPage }
+      }
+    }
+  }
+`;
+
 const ACTIVE_PROJECTS_QUERY = `
   query ActiveProjects {
     projects(
@@ -306,11 +391,9 @@ const ACTIVE_PROJECTS_QUERY = `
       filter: { status: { type: { nin: ["completed", "canceled"] } } }
     ) {
       nodes {
-        id name description slugId url progress health startDate targetDate
-        status { id name type color }
-      lead { id name }
-      teams(first: 20) { nodes { id name key } }
+        ${PROJECT_FIELDS}
       }
+      pageInfo { hasNextPage }
     }
   }
 `;
@@ -324,11 +407,31 @@ const TEAM_ACTIVE_PROJECTS_QUERY = `
         filter: { status: { type: { nin: ["completed", "canceled"] } } }
       ) {
         nodes {
-          id name description slugId url progress health startDate targetDate
-          status { id name type color }
-          lead { id name }
-          teams(first: 20) { nodes { id name key } }
+          ${PROJECT_FIELDS}
         }
+        pageInfo { hasNextPage }
+      }
+    }
+  }
+`;
+
+const CREATE_ISSUE_MUTATION = `
+  mutation CreateIssue($input: IssueCreateInput!) {
+    issueCreate(input: $input) {
+      success
+      issue {
+        ${ISSUE_FIELDS}
+      }
+    }
+  }
+`;
+
+const CREATE_PROJECT_MUTATION = `
+  mutation CreateProject($input: ProjectCreateInput!) {
+    projectCreate(input: $input) {
+      success
+      project {
+        ${PROJECT_FIELDS}
       }
     }
   }
@@ -346,19 +449,21 @@ const WORKFLOW_STATES_QUERY = `
   }
 `;
 
+const UPDATED_ISSUE_FIELDS = `
+  id title description updatedAt
+  state { id name type color position }
+  cycle { id number name }
+  project { id name slugId }
+  assignee { id name }
+  priority
+  labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } }
+`;
+
 const UPDATE_ISSUE_STATUS_MUTATION = `
   mutation UpdateIssueStatus($issueId: String!, $stateId: String!) {
     issueUpdate(id: $issueId, input: { stateId: $stateId }) {
       success
-      issue {
-        id
-        state { id name type color position }
-        cycle { id number name }
-        project { id name slugId }
-        assignee { id name }
-        priority
-        labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } }
-      }
+      issue { ${UPDATED_ISSUE_FIELDS} }
     }
   }
 `;
@@ -367,15 +472,7 @@ const UPDATE_ISSUE_CYCLE_MUTATION = `
   mutation UpdateIssueCycle($issueId: String!, $cycleId: String) {
     issueUpdate(id: $issueId, input: { cycleId: $cycleId }) {
       success
-      issue {
-        id
-        state { id name type color position }
-        cycle { id number name }
-        project { id name slugId }
-        assignee { id name }
-        priority
-        labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } }
-      }
+      issue { ${UPDATED_ISSUE_FIELDS} }
     }
   }
 `;
@@ -384,15 +481,7 @@ const UPDATE_ISSUE_PROJECT_MUTATION = `
   mutation UpdateIssueProject($issueId: String!, $projectId: String) {
     issueUpdate(id: $issueId, input: { projectId: $projectId }) {
       success
-      issue {
-        id
-        state { id name type color position }
-        cycle { id number name }
-        project { id name slugId }
-        assignee { id name }
-        priority
-        labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } }
-      }
+      issue { ${UPDATED_ISSUE_FIELDS} }
     }
   }
 `;
@@ -401,9 +490,7 @@ const UPDATE_ISSUE_ASSIGNEE_MUTATION = `
   mutation UpdateIssueAssignee($issueId: String!, $assigneeId: String) {
     issueUpdate(id: $issueId, input: { assigneeId: $assigneeId }) {
       success
-      issue { id state { id name type color position } cycle { id number name }
-        project { id name slugId } assignee { id name } priority
-        labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } } }
+      issue { ${UPDATED_ISSUE_FIELDS} }
     }
   }
 `;
@@ -412,9 +499,7 @@ const UPDATE_ISSUE_PRIORITY_MUTATION = `
   mutation UpdateIssuePriority($issueId: String!, $priority: Int!) {
     issueUpdate(id: $issueId, input: { priority: $priority }) {
       success
-      issue { id state { id name type color position } cycle { id number name }
-        project { id name slugId } assignee { id name } priority
-        labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } } }
+      issue { ${UPDATED_ISSUE_FIELDS} }
     }
   }
 `;
@@ -423,9 +508,16 @@ const UPDATE_ISSUE_LABELS_MUTATION = `
   mutation UpdateIssueLabels($issueId: String!, $labelIds: [String!]!) {
     issueUpdate(id: $issueId, input: { labelIds: $labelIds }) {
       success
-      issue { id state { id name type color position } cycle { id number name }
-        project { id name slugId } assignee { id name } priority
-        labels(first: 50) { nodes { id name color team { id name key } } pageInfo { hasNextPage } } }
+      issue { ${UPDATED_ISSUE_FIELDS} }
+    }
+  }
+`;
+
+const UPDATE_ISSUE_CONTENT_MUTATION = `
+  mutation UpdateIssueContent($issueId: String!, $title: String!, $description: String!) {
+    issueUpdate(id: $issueId, input: { title: $title, description: $description }) {
+      success
+      issue { ${UPDATED_ISSUE_FIELDS} }
     }
   }
 `;
@@ -464,6 +556,22 @@ function normalizeIssue(issue: v.InferOutput<typeof issueSchema>): Issue {
   };
 }
 
+function normalizeIssuePage(connection: v.InferOutput<typeof issueConnectionSchema>): IssuePage {
+  return {
+    issues: connection.nodes.map(normalizeIssue),
+    hasMore: connection.pageInfo.hasNextPage,
+  };
+}
+
+function normalizeProjectPage(
+  connection: v.InferOutput<typeof projectConnectionSchema>,
+): ProjectPage {
+  return {
+    projects: connection.nodes.map(normalizeProject),
+    hasMore: connection.pageInfo.hasNextPage,
+  };
+}
+
 function normalizeUpdatedIssue(issue: v.InferOutput<typeof updatedIssueSchema>): UpdatedIssue {
   return {
     ...issue,
@@ -473,10 +581,13 @@ function normalizeUpdatedIssue(issue: v.InferOutput<typeof updatedIssueSchema>):
 }
 
 export class LinearGraphqlClient implements LinearClient {
-  constructor(
-    private readonly apiKey: string,
-    private readonly fetcher: Fetch = fetch,
-  ) {}
+  private readonly apiKey: string;
+  private readonly fetcher: Fetch;
+
+  constructor(apiKey: string, fetcher: Fetch = fetch) {
+    this.apiKey = apiKey;
+    this.fetcher = fetcher;
+  }
 
   async getAuthStatus(): Promise<AuthStatus> {
     const data = await this.request(AUTH_STATUS_QUERY, {}, authStatusSchema);
@@ -491,43 +602,52 @@ export class LinearGraphqlClient implements LinearClient {
     return data.teams.nodes;
   }
 
-  async getIssues(scope: IssueScope): Promise<Issue[]> {
+  async getIssues(scope: IssueScope, options?: IssueReadOptions): Promise<IssuePage> {
+    const includeDone = options?.includeDone === true;
     switch (scope.kind) {
       case "assigned-to-me": {
         const data =
           scope.teamId === undefined
-            ? await this.request(ASSIGNED_ISSUES_QUERY, {}, assignedIssuesSchema)
+            ? await this.request(assignedIssuesQuery(includeDone), {}, assignedIssuesSchema)
             : await this.request(
-                TEAM_ASSIGNED_ISSUES_QUERY,
+                teamAssignedIssuesQuery(includeDone),
                 { teamId: scope.teamId },
                 assignedIssuesSchema,
               );
-        return data.viewer.assignedIssues.nodes.map(normalizeIssue);
+        return normalizeIssuePage(data.viewer.assignedIssues);
       }
       case "team": {
         const data = await this.request(
-          TEAM_ISSUES_QUERY,
+          scopedIssuesQuery("TeamIssues", "teamId", "team", includeDone),
           { teamId: scope.teamId },
           scopedIssuesSchema,
         );
-        return data.issues.nodes.map(normalizeIssue);
+        return normalizeIssuePage(data.issues);
+      }
+      case "current-cycle": {
+        const [cycle] = await this.getCurrentCycles(scope.teamId);
+        return cycle === undefined
+          ? { issues: [], hasMore: false }
+          : this.getIssues({ kind: "cycle", cycleId: cycle.id }, options);
       }
       case "cycle": {
         const data = await this.request(
-          CYCLE_ISSUES_QUERY,
+          scopedIssuesQuery("CycleIssues", "cycleId", "cycle", includeDone),
           { cycleId: scope.cycleId },
           scopedIssuesSchema,
         );
-        return data.issues.nodes.map(normalizeIssue);
+        return normalizeIssuePage(data.issues);
       }
       case "project": {
         const data = await this.request(
-          PROJECT_ISSUES_QUERY,
+          scopedIssuesQuery("ProjectIssues", "projectId", "project", includeDone),
           { projectId: scope.projectId },
           scopedIssuesSchema,
         );
-        return data.issues.nodes.map(normalizeIssue);
+        return normalizeIssuePage(data.issues);
       }
+      default:
+        return unreachable(scope);
     }
   }
 
@@ -552,17 +672,43 @@ export class LinearGraphqlClient implements LinearClient {
     );
   }
 
-  async getActiveProjects(teamId?: string): Promise<Project[]> {
+  async getTeamCycles(teamId: string): Promise<Cycle[]> {
+    const data = await this.request(TEAM_CYCLES_QUERY, { teamId }, teamCyclesSchema);
+    // Active cycle first, then newest first, so pickers read naturally.
+    return data.team.cycles.nodes
+      .map(normalizeCycle)
+      .sort(
+        (left, right) =>
+          Number(right.isActive) - Number(left.isActive) || right.number - left.number,
+      );
+  }
+
+  async getIssueComments(issueId: string): Promise<IssueCommentPage> {
+    const data = await this.request(ISSUE_COMMENTS_QUERY, { issueId }, issueCommentsSchema);
+    // orderBy: createdAt pages newest-first, so a truncated read drops the
+    // oldest comments; the thread itself reads top-down oldest-first.
+    const comments = data.issue.comments.nodes
+      .map((comment) => ({
+        id: comment.id,
+        body: comment.body,
+        createdAt: comment.createdAt,
+        author: comment.user?.name ?? null,
+      }))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    return { comments, hasMore: data.issue.comments.pageInfo.hasNextPage };
+  }
+
+  async getActiveProjects(teamId?: string): Promise<ProjectPage> {
     if (teamId !== undefined) {
       const data = await this.request(
         TEAM_ACTIVE_PROJECTS_QUERY,
         { teamId },
         teamActiveProjectsSchema,
       );
-      return data.team.projects.nodes.map(normalizeProject);
+      return normalizeProjectPage(data.team.projects);
     }
     const data = await this.request(ACTIVE_PROJECTS_QUERY, {}, activeProjectsSchema);
-    return data.projects.nodes.map(normalizeProject);
+    return normalizeProjectPage(data.projects);
   }
 
   async getWorkflowStates(teamId: string): Promise<WorkflowState[]> {
@@ -573,6 +719,17 @@ export class LinearGraphqlClient implements LinearClient {
   async updateIssue(change: IssueChange): Promise<UpdatedIssue> {
     let data: v.InferOutput<typeof updateIssueSchema>;
     switch (change.kind) {
+      case "content":
+        data = await this.request(
+          UPDATE_ISSUE_CONTENT_MUTATION,
+          {
+            issueId: change.issueId,
+            title: change.title,
+            description: change.description,
+          },
+          updateIssueSchema,
+        );
+        break;
       case "status":
         data = await this.request(
           UPDATE_ISSUE_STATUS_MUTATION,
@@ -615,11 +772,53 @@ export class LinearGraphqlClient implements LinearClient {
           updateIssueSchema,
         );
         break;
+      default:
+        return unreachable(change);
     }
     if (!data.issueUpdate.success) {
       throw new LinearApiError("graphql", "Linear rejected the issue update.");
     }
     return normalizeUpdatedIssue(data.issueUpdate.issue);
+  }
+
+  async createIssue(input: IssueCreateInput): Promise<Issue> {
+    const payload: Record<string, unknown> = {
+      teamId: input.teamId,
+      title: input.title,
+      priority: input.priority,
+    };
+    if (input.description.trim().length > 0) payload["description"] = input.description;
+    if (input.stateId !== null) payload["stateId"] = input.stateId;
+    if (input.assigneeId !== null) payload["assigneeId"] = input.assigneeId;
+    if (input.cycleId !== null) payload["cycleId"] = input.cycleId;
+    if (input.projectId !== null) payload["projectId"] = input.projectId;
+    if (input.labelIds.length > 0) payload["labelIds"] = input.labelIds;
+
+    const data = await this.request(CREATE_ISSUE_MUTATION, { input: payload }, createIssueSchema);
+    if (!data.issueCreate.success || data.issueCreate.issue === null) {
+      throw new LinearApiError("graphql", "Linear rejected the issue create.");
+    }
+    return normalizeIssue(data.issueCreate.issue);
+  }
+
+  async createProject(input: ProjectCreateInput): Promise<Project> {
+    const payload: Record<string, unknown> = {
+      name: input.name,
+      teamIds: input.teamIds,
+    };
+    if (input.description.trim().length > 0) payload["description"] = input.description;
+    if (input.content.trim().length > 0) payload["content"] = input.content;
+    if (input.leadId !== null) payload["leadId"] = input.leadId;
+
+    const data = await this.request(
+      CREATE_PROJECT_MUTATION,
+      { input: payload },
+      createProjectSchema,
+    );
+    if (!data.projectCreate.success || data.projectCreate.project === null) {
+      throw new LinearApiError("graphql", "Linear rejected the project create.");
+    }
+    return normalizeProject(data.projectCreate.project);
   }
 
   private async request<TSchema extends Schema>(
@@ -631,15 +830,25 @@ export class LinearGraphqlClient implements LinearClient {
     try {
       response = await this.fetcher(LINEAR_GRAPHQL_ENDPOINT, {
         method: "POST",
-        signal: AbortSignal.timeout(15_000),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         headers: { Authorization: this.apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({ query, variables }),
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof Error && error.name === "TimeoutError") {
+        throw new LinearApiError(
+          "timeout",
+          `The Linear API did not respond within ${REQUEST_TIMEOUT_MS / 1000} seconds. Try again.`,
+        );
+      }
       throw new LinearApiError(
         "network",
         "Could not connect to the Linear API. Check your network connection.",
       );
+    }
+
+    if (response.status === 429) {
+      throw new LinearApiError("rate-limit", rateLimitMessage(response));
     }
 
     let raw: unknown;
@@ -654,7 +863,7 @@ export class LinearGraphqlClient implements LinearClient {
 
     const envelope = v.safeParse(graphqlEnvelopeSchema, raw);
     if (envelope.success && envelope.output.errors?.length) {
-      if (envelope.output.errors.some((error) => error.extensions?.code === "RATELIMITED")) {
+      if (envelope.output.errors.some((error) => error.extensions?.["code"] === "RATELIMITED")) {
         throw new LinearApiError("rate-limit", rateLimitMessage(response));
       }
       const messages = envelope.output.errors.map((error) => error.message).join(" / ");

@@ -25,7 +25,7 @@ describe("readApiKey", () => {
 
 describe("parseWorkspaceSlug", () => {
   it("accepts slugs that can be used as a Linear urlKey", () => {
-    expect(parseWorkspaceSlug(" fs0414 ")).toBe("fs0414");
+    expect(parseWorkspaceSlug(" sample-workspace ")).toBe("sample-workspace");
     expect(parseWorkspaceSlug("my-workspace")).toBe("my-workspace");
   });
 
@@ -44,8 +44,8 @@ describe("user config", () => {
   });
 
   it("validates known fields and normalizes the default team key", () => {
-    expect(parseUserConfig({ workspace: "fs0414", defaultTeam: "app" })).toEqual({
-      workspace: "fs0414",
+    expect(parseUserConfig({ workspace: "sample-workspace", defaultTeam: "app" })).toEqual({
+      workspace: "sample-workspace",
       defaultTeam: "APP",
     });
     expect(parseTeamKey(" plat ")).toBe("PLAT");
@@ -59,10 +59,10 @@ describe("user config", () => {
       await mkdir(directory, { recursive: true });
       await writeFile(
         join(directory, "config.json"),
-        JSON.stringify({ workspace: "fs0414", defaultTeam: "grow" }),
+        JSON.stringify({ workspace: "sample-workspace", defaultTeam: "grow" }),
       );
       await expect(loadUserConfig({ XDG_CONFIG_HOME: root })).resolves.toEqual({
-        workspace: "fs0414",
+        workspace: "sample-workspace",
         defaultTeam: "GROW",
       });
       await writeFile(join(directory, "config.json"), "{");

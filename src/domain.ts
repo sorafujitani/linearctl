@@ -46,6 +46,7 @@ export interface IssueLabel {
 export type IssueScope =
   | { kind: "assigned-to-me"; teamId?: string }
   | { kind: "team"; teamId: string }
+  | { kind: "current-cycle"; teamId: string }
   | { kind: "cycle"; cycleId: string }
   | { kind: "project"; projectId: string };
 
@@ -83,6 +84,12 @@ export interface Issue extends IssueSummary {
   project: ProjectRef | null;
 }
 
+/** One bounded read of an issue list; hasMore means rows past the read limit exist upstream. */
+export interface IssuePage {
+  issues: Issue[];
+  hasMore: boolean;
+}
+
 export interface Cycle extends CycleRef {
   startsAt: string;
   endsAt: string;
@@ -103,7 +110,28 @@ export interface Project extends ProjectRef {
   teams: Team[];
 }
 
+export interface IssueComment {
+  id: string;
+  body: string;
+  createdAt: string;
+  /** Null for bot or integration comments that carry no user. */
+  author: string | null;
+}
+
+/** One bounded read of an issue's comments; hasMore means older comments exist upstream. */
+export interface IssueCommentPage {
+  comments: IssueComment[];
+  hasMore: boolean;
+}
+
+/** One bounded read of a project list; hasMore means rows past the read limit exist upstream. */
+export interface ProjectPage {
+  projects: Project[];
+  hasMore: boolean;
+}
+
 export type IssueChange =
+  | { kind: "content"; issueId: string; title: string; description: string }
   | { kind: "status"; issueId: string; stateId: string }
   | { kind: "cycle"; issueId: string; cycleId: string | null }
   | { kind: "project"; issueId: string; projectId: string | null }
@@ -113,6 +141,9 @@ export type IssueChange =
 
 export interface UpdatedIssue {
   id: string;
+  title: string;
+  description: string | null;
+  updatedAt: string;
   state: WorkflowState;
   cycle: CycleRef | null;
   project: ProjectRef | null;
@@ -122,69 +153,44 @@ export interface UpdatedIssue {
   labelsComplete: boolean;
 }
 
-const normalizeSearch = (value: string): string => value.trim().toLocaleLowerCase();
+export interface IssueCreateInput {
+  teamId: string;
+  title: string;
+  description: string;
+  stateId: string | null;
+  assigneeId: string | null;
+  priority: number;
+  cycleId: string | null;
+  projectId: string | null;
+  labelIds: string[];
+}
 
-function matchesSearch(query: string, candidates: readonly string[]): boolean {
-  const normalized = normalizeSearch(query);
+export interface ProjectCreateInput {
+  name: string;
+  description: string;
+  content: string;
+  teamIds: string[];
+  leadId: string | null;
+}
+
+/** Linear priority values 0-4 in order; index with a priority number. */
+export const PRIORITY_LABELS = ["No priority", "Urgent", "High", "Medium", "Low"] as const;
+
+export function priorityLabel(priority: number): string {
+  return PRIORITY_LABELS[priority] ?? PRIORITY_LABELS[0];
+}
+
+/** Case-insensitive substring match shared by list search, picker filters, and help search. */
+export function matchesSearch(query: string, candidates: readonly string[]): boolean {
+  const normalized = query.trim().toLocaleLowerCase();
   return (
     normalized.length === 0 ||
     candidates.some((candidate) => candidate.toLocaleLowerCase().includes(normalized))
   );
 }
 
-export function filterIssues(issues: readonly Issue[], query: string): Issue[] {
-  return issues.filter((issue) =>
-    matchesSearch(query, [
-      issue.identifier,
-      issue.title,
-      issue.description ?? "",
-      issue.state.name,
-      issue.team.name,
-      issue.priorityLabel,
-      issue.assignee?.name ?? "",
-      issue.cycle?.name ?? "",
-      issue.cycle === null ? "" : String(issue.cycle.number),
-      issue.project?.name ?? "",
-      ...issue.labels.map((label) => label.name),
-    ]),
-  );
-}
-
-export function filterCycles(cycles: readonly Cycle[], query: string): Cycle[] {
-  return cycles.filter((cycle) =>
-    matchesSearch(query, [cycle.name ?? "", String(cycle.number), cycle.team.name, cycle.team.key]),
-  );
-}
-
-export function filterProjects(projects: readonly Project[], query: string): Project[] {
-  return projects.filter((project) =>
-    matchesSearch(query, [
-      project.name,
-      project.description,
-      project.slugId,
-      project.status.name,
-      project.health ?? "",
-      project.lead?.name ?? "",
-      ...project.teams.flatMap((team) => [team.name, team.key]),
-    ]),
-  );
-}
-
-export function clampSelection(index: number, itemCount: number): number {
-  if (itemCount <= 0) return 0;
-  return Math.min(Math.max(index, 0), itemCount - 1);
-}
-
 export function sortWorkflowStates(states: readonly WorkflowState[]): WorkflowState[] {
   return [...states].sort(
     (left, right) => left.position - right.position || left.name.localeCompare(right.name),
   );
-}
-
-export function cycleRef(cycle: Cycle): CycleRef {
-  return { id: cycle.id, number: cycle.number, name: cycle.name };
-}
-
-export function projectRef(project: Project): ProjectRef {
-  return { id: project.id, name: project.name, slugId: project.slugId };
 }

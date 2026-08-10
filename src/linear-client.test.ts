@@ -59,6 +59,9 @@ function updatedIssueData() {
         success: true,
         issue: {
           id: "issue-1",
+          title: "Build CLI",
+          description: "Ship the terminal workflow",
+          updatedAt: "2026-08-10T00:00:00.000Z",
           state: workflowState,
           cycle: cycleRef,
           project: projectRef,
@@ -81,7 +84,7 @@ describe("LinearGraphqlClient reads", () => {
             id: "viewer-1",
             name: "Sora",
             email: "sora@example.invalid",
-            organization: { id: "org-1", name: "Example", urlKey: "fs0414" },
+            organization: { id: "org-1", name: "Example", urlKey: "sample-workspace" },
           },
         },
       });
@@ -90,12 +93,13 @@ describe("LinearGraphqlClient reads", () => {
       new LinearGraphqlClient("test-key-not-real", fetcher).getAuthStatus(),
     ).resolves.toEqual({
       viewer: { id: "viewer-1", name: "Sora", email: "sora@example.invalid" },
-      workspace: { id: "org-1", name: "Example", urlKey: "fs0414" },
+      workspace: { id: "org-1", name: "Example", urlKey: "sample-workspace" },
     });
   });
 
   it("limits assigned issues to 50 and parses nullable full fields", async () => {
     const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
       const request = requestBody(init);
       expect(request.variables).toEqual({});
       expect(request.query).toContain("first: 50");
@@ -107,12 +111,13 @@ describe("LinearGraphqlClient reads", () => {
           viewer: {
             assignedIssues: {
               nodes: [issueNode()],
+              pageInfo: { hasNextPage: false },
             },
           },
         },
       });
     });
-    const issues = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
+    const { issues } = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
       kind: "assigned-to-me",
     });
     expect(issues[0]).toMatchObject({
@@ -163,11 +168,15 @@ describe("LinearGraphqlClient reads", () => {
         expect(request.query).toContain('nin: ["completed", "canceled"]');
         expect(request.query).toContain(`${testCase.field}: { id: { eq: $${testCase.key} } }`);
         expect(request.variables).toEqual({ [testCase.key]: testCase.id });
-        return jsonResponse({ data: { issues: { nodes: [issueNode()] } } });
+        return jsonResponse({
+          data: { issues: { nodes: [issueNode()], pageInfo: { hasNextPage: false } } },
+        });
       });
-      await expect(
-        new LinearGraphqlClient("test-key-not-real", fetcher).getIssues(testCase.scope),
-      ).resolves.toHaveLength(1);
+      const page = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues(
+        testCase.scope,
+      );
+      expect(page.issues).toHaveLength(1);
+      expect(page.hasMore).toBe(false);
     }
   });
 
@@ -177,23 +186,181 @@ describe("LinearGraphqlClient reads", () => {
       expect(request.query).toContain("query TeamAssignedIssues");
       expect(request.query).toContain("team: { id: { eq: $teamId } }");
       expect(request.variables).toEqual({ teamId: "team-1" });
-      return jsonResponse({ data: { viewer: { assignedIssues: { nodes: [issueNode()] } } } });
+      expect(request.query).toContain('nin: ["completed", "canceled"]');
+      return jsonResponse({
+        data: {
+          viewer: {
+            assignedIssues: { nodes: [issueNode()], pageInfo: { hasNextPage: false } },
+          },
+        },
+      });
     });
     await expect(
+      new LinearGraphqlClient("test-key-not-real", fetcher)
+        .getIssues({ kind: "assigned-to-me", teamId: "team-1" })
+        .then((page) => page.issues),
+    ).resolves.toHaveLength(1);
+  });
+
+  it("resolves the active team's current cycle before loading its issues", async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      if (request.query.includes("query TeamCurrentCycle")) {
+        expect(request.query).not.toContain("issues(");
+        expect(request.variables).toEqual({ teamId: "team-1" });
+        return jsonResponse({
+          data: {
+            team: {
+              activeCycle: {
+                ...cycleRef,
+                startsAt: "2026-08-01T00:00:00.000Z",
+                endsAt: "2026-08-14T00:00:00.000Z",
+                progress: 0.5,
+                isActive: true,
+                team,
+              },
+            },
+          },
+        });
+      }
+      expect(request.query).toContain("query CycleIssues");
+      expect(request.variables).toEqual({ cycleId: "cycle-1" });
+      return jsonResponse({
+        data: { issues: { nodes: [issueNode()], pageInfo: { hasNextPage: false } } },
+      });
+    });
+
+    await expect(
+      new LinearGraphqlClient("test-key-not-real", fetcher)
+        .getIssues({ kind: "current-cycle", teamId: "team-1" })
+        .then((page) => page.issues),
+    ).resolves.toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns no issues when the active team has no current cycle", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ data: { team: { activeCycle: null } } }));
+
+    await expect(
       new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
-        kind: "assigned-to-me",
+        kind: "current-cycle",
         teamId: "team-1",
       }),
-    ).resolves.toHaveLength(1);
+    ).resolves.toEqual({ issues: [], hasMore: false });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the state filter entirely when done issues are included", async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.variables).toEqual({ teamId: "team-1" });
+      expect(request.query).not.toContain("state:");
+      expect(request.query).not.toContain("nin:");
+      return jsonResponse({
+        data: { issues: { nodes: [], pageInfo: { hasNextPage: false } } },
+      });
+    });
+    await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues(
+      { kind: "team", teamId: "team-1" },
+      { includeDone: true },
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("sorts team cycles active-first then newest", async () => {
+    const cycleNode = (number: number, isActive: boolean) => ({
+      id: `cycle-${number}`,
+      number,
+      name: null,
+      startsAt: "2026-08-01T00:00:00.000Z",
+      endsAt: "2026-08-14T00:00:00.000Z",
+      progress: 0,
+      isActive,
+      team,
+    });
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          team: {
+            cycles: { nodes: [cycleNode(22, false), cycleNode(24, true), cycleNode(23, false)] },
+          },
+        },
+      }),
+    );
+    const cycles = await new LinearGraphqlClient("test-key-not-real", fetcher).getTeamCycles(
+      "team-1",
+    );
+    expect(cycles.map((cycle) => cycle.number)).toEqual([24, 23, 22]);
+  });
+
+  it("normalizes issue comments and null users", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          issue: {
+            comments: {
+              nodes: [
+                {
+                  id: "comment-1",
+                  body: "Looks good.",
+                  createdAt: "2026-08-05T00:00:00.000Z",
+                  user: assignee,
+                },
+                {
+                  id: "comment-2",
+                  body: "Deployed.",
+                  createdAt: "2026-08-06T00:00:00.000Z",
+                  user: null,
+                },
+              ],
+              pageInfo: { hasNextPage: true },
+            },
+          },
+        },
+      }),
+    );
+    const page = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssueComments(
+      "issue-1",
+    );
+    expect(page.comments).toEqual([
+      {
+        id: "comment-1",
+        body: "Looks good.",
+        createdAt: "2026-08-05T00:00:00.000Z",
+        author: "Sora",
+      },
+      { id: "comment-2", body: "Deployed.", createdAt: "2026-08-06T00:00:00.000Z", author: null },
+    ]);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("reports when the issue list exceeds the read limit", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        data: {
+          viewer: {
+            assignedIssues: { nodes: [issueNode()], pageInfo: { hasNextPage: true } },
+          },
+        },
+      }),
+    );
+    const page = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
+      kind: "assigned-to-me",
+    });
+    expect(page.hasMore).toBe(true);
   });
 
   it("reports when issue labels exceed the read limit", async () => {
     const fetcher = vi.fn(async () =>
       jsonResponse({
-        data: { viewer: { assignedIssues: { nodes: [issueNode(true)] } } },
+        data: {
+          viewer: {
+            assignedIssues: { nodes: [issueNode(true)], pageInfo: { hasNextPage: false } },
+          },
+        },
       }),
     );
-    const issues = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
+    const { issues } = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssues({
       kind: "assigned-to-me",
     });
     expect(issues[0]?.labelsComplete).toBe(false);
@@ -277,11 +444,12 @@ describe("LinearGraphqlClient reads", () => {
                 teams: { nodes: [team] },
               },
             ],
+            pageInfo: { hasNextPage: false },
           },
         },
       });
     });
-    const projects = await new LinearGraphqlClient(
+    const { projects } = await new LinearGraphqlClient(
       "test-key-not-real",
       fetcher,
     ).getActiveProjects();
@@ -323,11 +491,17 @@ describe("LinearGraphqlClient reads", () => {
       }
       expect(request.query).toContain("query TeamActiveProjects");
       expect(request.query).toContain("team(id: $teamId)");
-      return jsonResponse({ data: { team: { projects: { nodes: [project] } } } });
+      return jsonResponse({
+        data: {
+          team: { projects: { nodes: [project], pageInfo: { hasNextPage: false } } },
+        },
+      });
     });
     const client = new LinearGraphqlClient("test-key-not-real", fetcher);
     await expect(client.getCurrentCycles("team-1")).resolves.toHaveLength(1);
-    await expect(client.getActiveProjects("team-1")).resolves.toHaveLength(1);
+    await expect(
+      client.getActiveProjects("team-1").then((page) => page.projects),
+    ).resolves.toHaveLength(1);
   });
 });
 
@@ -352,6 +526,31 @@ describe("LinearGraphqlClient mutations", () => {
       labelsComplete: true,
     });
   }
+
+  it("updates title and markdown description in one mutation", async () => {
+    await expectMutation(
+      {
+        kind: "content",
+        issueId: "issue-1",
+        title: "Edit issues",
+        description: "## Done\nFrom the TUI.",
+      },
+      {
+        issueId: "issue-1",
+        title: "Edit issues",
+        description: "## Done\nFrom the TUI.",
+      },
+      "input: { title: $title, description: $description }",
+      [
+        "input: { stateId",
+        "input: { cycleId",
+        "input: { projectId",
+        "input: { assigneeId",
+        "input: { priority",
+        "input: { labelIds",
+      ],
+    );
+  });
 
   it("includes only stateId in a status mutation", async () => {
     await expectMutation(
@@ -459,6 +658,32 @@ describe("LinearGraphqlClient errors", () => {
     expect(error).toMatchObject({ kind: "rate-limit" });
   });
 
+  it("classifies HTTP 429 as a rate limit with the reset time", async () => {
+    const fetcher = vi.fn(
+      async () =>
+        new Response("too many requests", {
+          status: 429,
+          headers: { "x-ratelimit-requests-reset": "1893456000000" },
+        }),
+    );
+    const error = await new LinearGraphqlClient("test-key-not-real", fetcher)
+      .getIssues({ kind: "assigned-to-me" })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(LinearApiError);
+    expect(error).toMatchObject({ kind: "rate-limit" });
+    expect((error as LinearApiError).message).toContain("Retry after");
+  });
+
+  it("classifies request timeouts separately from connection failures", async () => {
+    const client = new LinearGraphqlClient("test-key-not-real", async () => {
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    await expect(client.getAuthStatus()).rejects.toMatchObject({
+      kind: "timeout",
+      message: expect.stringContaining("did not respond") as string,
+    });
+  });
+
   it("distinguishes HTTP, network, and schema errors without exposing the key", async () => {
     const http = new LinearGraphqlClient(
       "test-key-not-real",
@@ -483,10 +708,87 @@ describe("LinearGraphqlClient errors", () => {
 });
 
 describe("assertWorkspace", () => {
-  const workspace = { id: "org-1", name: "Example", urlKey: "fs0414" };
+  const workspace = { id: "org-1", name: "Example", urlKey: "sample-workspace" };
   it("accepts matching or omitted workspaces and fails fast on a mismatch", () => {
-    expect(() => assertWorkspace("FS0414", workspace)).not.toThrow();
+    expect(() => assertWorkspace("SAMPLE-WORKSPACE", workspace)).not.toThrow();
     expect(() => assertWorkspace(undefined, workspace)).not.toThrow();
     expect(() => assertWorkspace("other", workspace)).toThrow("Workspace mismatch");
+  });
+});
+
+describe("LinearGraphqlClient create mutations", () => {
+  it("creates an issue with a composite input payload", async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.query).toContain("mutation CreateIssue");
+      expect(request.variables).toEqual({
+        input: {
+          teamId: "team-1",
+          title: "Ship create flow",
+          priority: 2,
+          description: "## Notes\n- one",
+          stateId: "state-1",
+          labelIds: ["label-1"],
+        },
+      });
+      return jsonResponse({
+        data: {
+          issueCreate: {
+            success: true,
+            issue: issueNode(),
+          },
+        },
+      });
+    });
+    const created = await new LinearGraphqlClient("test-key-not-real", fetcher).createIssue({
+      teamId: "team-1",
+      title: "Ship create flow",
+      description: "## Notes\n- one",
+      stateId: "state-1",
+      assigneeId: null,
+      priority: 2,
+      cycleId: null,
+      projectId: null,
+      labelIds: ["label-1"],
+    });
+    expect(created.identifier).toBe("ENG-1");
+  });
+
+  it("creates a project with name, teams, and markdown content", async () => {
+    const project = {
+      id: "project-2",
+      name: "New Platform",
+      slugId: "new-platform",
+      description: "short",
+      url: "https://linear.app/example/project/new-platform",
+      progress: 0,
+      health: null,
+      startDate: null,
+      targetDate: null,
+      status: { id: "planned", name: "Planned", type: "planned", color: "#fff" },
+      lead: null,
+      teams: { nodes: [team] },
+    };
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.query).toContain("mutation CreateProject");
+      expect(request.variables).toEqual({
+        input: {
+          name: "New Platform",
+          teamIds: ["team-1"],
+          description: "short",
+          content: "# Body\nmarkdown",
+        },
+      });
+      return jsonResponse({ data: { projectCreate: { success: true, project } } });
+    });
+    const created = await new LinearGraphqlClient("test-key-not-real", fetcher).createProject({
+      name: "New Platform",
+      description: "short",
+      content: "# Body\nmarkdown",
+      teamIds: ["team-1"],
+      leadId: null,
+    });
+    expect(created).toMatchObject({ name: "New Platform", teams: [team] });
   });
 });
