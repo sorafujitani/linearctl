@@ -93,6 +93,7 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           (cd release-assets && sha256sum linearctl-* > SHA256SUMS)
