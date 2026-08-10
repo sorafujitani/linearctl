@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import type { Issue } from "./domain";
+import type { Issue } from "../core/domain";
 import {
   filterIssueList,
   groupIssueList,

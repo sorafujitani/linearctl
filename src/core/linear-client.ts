@@ -19,6 +19,7 @@ import type {
   WorkflowState,
   Workspace,
 } from "./domain";
+import { normalizeIssueIdentifier } from "./domain";
 import { unreachable } from "./unreachable";
 
 const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
@@ -142,6 +143,7 @@ const assignedIssuesSchema = v.object({
   viewer: v.object({ assignedIssues: issueConnectionSchema }),
 });
 const scopedIssuesSchema = v.object({ issues: issueConnectionSchema });
+const singleIssueSchema = v.object({ issue: issueSchema });
 const teamsSchema = v.object({ teams: v.object({ nodes: v.array(teamSchema) }) });
 const teamMembersSchema = v.object({
   team: v.object({ members: v.object({ nodes: v.array(userSummarySchema) }) }),
@@ -222,6 +224,8 @@ export interface LinearClient {
   getAuthStatus(): Promise<AuthStatus>;
   getTeams(): Promise<Team[]>;
   getIssues(scope: IssueScope, options?: IssueReadOptions): Promise<IssuePage>;
+  /** Resolve one issue by its human identifier (e.g. APP-101); throws when it does not exist. */
+  getIssue(identifier: string): Promise<Issue>;
   getTeamMembers(teamId: string): Promise<UserSummary[]>;
   getIssueLabels(): Promise<IssueLabel[]>;
   getCurrentCycles(teamId?: string): Promise<Cycle[]>;
@@ -321,6 +325,14 @@ const scopedIssuesQuery = (
   }
 `;
 
+const ISSUE_BY_IDENTIFIER_QUERY = `
+  query IssueByIdentifier($id: String!) {
+    issue(id: $id) {
+      ${ISSUE_FIELDS}
+    }
+  }
+`;
+
 const TEAMS_QUERY = `query Teams { teams(first: 50) { nodes { id name key } } }`;
 const TEAM_MEMBERS_QUERY = `
   query TeamMembers($teamId: String!) {
@@ -362,7 +374,7 @@ const TEAM_CURRENT_CYCLE_QUERY = `
 const TEAM_CYCLES_QUERY = `
   query TeamCycles($teamId: String!) {
     team(id: $teamId) {
-      cycles(first: 25, orderBy: updatedAt) {
+      cycles(first: 50, orderBy: updatedAt) {
         nodes {
           id number name startsAt endsAt progress isActive
           team { id name key }
@@ -513,6 +525,24 @@ const UPDATE_ISSUE_LABELS_MUTATION = `
   }
 `;
 
+const UPDATE_ISSUE_TITLE_MUTATION = `
+  mutation UpdateIssueTitle($issueId: String!, $title: String!) {
+    issueUpdate(id: $issueId, input: { title: $title }) {
+      success
+      issue { ${UPDATED_ISSUE_FIELDS} }
+    }
+  }
+`;
+
+const UPDATE_ISSUE_DESCRIPTION_MUTATION = `
+  mutation UpdateIssueDescription($issueId: String!, $description: String!) {
+    issueUpdate(id: $issueId, input: { description: $description }) {
+      success
+      issue { ${UPDATED_ISSUE_FIELDS} }
+    }
+  }
+`;
+
 const UPDATE_ISSUE_CONTENT_MUTATION = `
   mutation UpdateIssueContent($issueId: String!, $title: String!, $description: String!) {
     issueUpdate(id: $issueId, input: { title: $title, description: $description }) {
@@ -651,6 +681,15 @@ export class LinearGraphqlClient implements LinearClient {
     }
   }
 
+  async getIssue(identifier: string): Promise<Issue> {
+    const data = await this.request(
+      ISSUE_BY_IDENTIFIER_QUERY,
+      { id: normalizeIssueIdentifier(identifier) },
+      singleIssueSchema,
+    );
+    return normalizeIssue(data.issue);
+  }
+
   async getTeamMembers(teamId: string): Promise<UserSummary[]> {
     const data = await this.request(TEAM_MEMBERS_QUERY, { teamId }, teamMembersSchema);
     return data.team.members.nodes;
@@ -727,6 +766,20 @@ export class LinearGraphqlClient implements LinearClient {
             title: change.title,
             description: change.description,
           },
+          updateIssueSchema,
+        );
+        break;
+      case "title":
+        data = await this.request(
+          UPDATE_ISSUE_TITLE_MUTATION,
+          { issueId: change.issueId, title: change.title },
+          updateIssueSchema,
+        );
+        break;
+      case "description":
+        data = await this.request(
+          UPDATE_ISSUE_DESCRIPTION_MUTATION,
+          { issueId: change.issueId, description: change.description },
           updateIssueSchema,
         );
         break;

@@ -2,9 +2,9 @@ import { fg, StyledText } from "@opentui/core";
 import stringWidth from "string-width";
 
 import { scopedProjects, visibleIssues, visibleProjects, type AppState } from "./app-state";
-import type { Issue, IssueCommentPage, IssueScope, Project } from "./domain";
+import type { Issue, IssueCommentPage, IssueScope, Project } from "../core/domain";
 import { groupIssueList } from "./issue-list";
-import { unreachable } from "./unreachable";
+import { unreachable } from "../core/unreachable";
 
 export const COLORS = {
   accent: "#7AA2F7",

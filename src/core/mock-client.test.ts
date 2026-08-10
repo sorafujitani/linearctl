@@ -442,4 +442,13 @@ describe("MockLinearClient mutations", () => {
       ),
     ).toBe(true);
   });
+
+  it("resolves one issue by identifier ignoring case and rejects unknown identifiers", async () => {
+    const client = new MockLinearClient();
+    const issue = await client.getIssue(" app-101 ");
+    expect(issue.identifier).toBe("APP-101");
+    issue.title = "mutated";
+    expect((await client.getIssue("APP-101")).title).not.toBe("mutated");
+    await expect(client.getIssue("APP-999")).rejects.toThrow("Issue not found: APP-999");
+  });
 });

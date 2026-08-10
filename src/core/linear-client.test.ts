@@ -792,3 +792,40 @@ describe("LinearGraphqlClient create mutations", () => {
     expect(created).toMatchObject({ name: "New Platform", teams: [team] });
   });
 });
+
+describe("LinearGraphqlClient getIssue", () => {
+  it("normalizes the human identifier before sending it", async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.query).toContain("issue(id: $id)");
+      expect(request.variables).toEqual({ id: "ENG-1" });
+      return jsonResponse({ data: { issue: issueNode() } });
+    });
+    const issue = await new LinearGraphqlClient("test-key-not-real", fetcher).getIssue(" eng-1 ");
+    expect(issue).toMatchObject({ identifier: "ENG-1", labels: [label], labelsComplete: true });
+  });
+
+  it("updates the title alone without sending the description", async () => {
+    const fetcher = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      const request = requestBody(init);
+      expect(request.query).toContain("input: { title: $title }");
+      expect(request.variables).toEqual({ issueId: "issue-1", title: "Renamed" });
+      return jsonResponse(updatedIssueData());
+    });
+    await new LinearGraphqlClient("test-key-not-real", fetcher).updateIssue({
+      kind: "title",
+      issueId: "issue-1",
+      title: "Renamed",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates the API error when the issue does not exist", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({ errors: [{ message: "Entity not found: Issue" }] }),
+    );
+    await expect(
+      new LinearGraphqlClient("test-key-not-real", fetcher).getIssue("ENG-999"),
+    ).rejects.toThrow("Entity not found");
+  });
+});

@@ -1,5 +1,5 @@
 import { selectedCatalogItem, selectedIssue, type AppState } from "./app-state";
-import type { IssueScope } from "./domain";
+import type { IssueScope } from "../core/domain";
 import type { UrlOpener } from "./open-url";
 
 export function selectedItemUrl(state: AppState, workspaceUrlKey: string): string | null {

@@ -132,6 +132,8 @@ export interface ProjectPage {
 
 export type IssueChange =
   | { kind: "content"; issueId: string; title: string; description: string }
+  | { kind: "title"; issueId: string; title: string }
+  | { kind: "description"; issueId: string; description: string }
   | { kind: "status"; issueId: string; stateId: string }
   | { kind: "cycle"; issueId: string; cycleId: string | null }
   | { kind: "project"; issueId: string; projectId: string | null }
@@ -171,6 +173,17 @@ export interface ProjectCreateInput {
   content: string;
   teamIds: string[];
   leadId: string | null;
+}
+
+const ISSUE_IDENTIFIER_PATTERN = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
+
+/**
+ * Human identifiers (app-101) are trimmed and uppercased so mock and real
+ * clients resolve them identically; UUIDs and other shapes pass through.
+ */
+export function normalizeIssueIdentifier(raw: string): string {
+  const trimmed = raw.trim();
+  return ISSUE_IDENTIFIER_PATTERN.test(trimmed) ? trimmed.toLocaleUpperCase() : trimmed;
 }
 
 /** Linear priority values 0-4 in order; index with a priority number. */

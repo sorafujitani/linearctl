@@ -8,7 +8,7 @@ import {
   setGroup,
   setQuery,
 } from "./app-state";
-import type { Issue, Project, Team } from "./domain";
+import type { Issue, Project, Team } from "../core/domain";
 import type { KeyEvent } from "@opentui/core";
 
 import { openSelectedItemUrl, selectedItemUrl } from "./item-url";

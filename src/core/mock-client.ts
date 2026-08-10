@@ -18,7 +18,7 @@ import type {
   UserSummary,
   WorkflowState,
 } from "./domain";
-import { priorityLabel } from "./domain";
+import { normalizeIssueIdentifier, priorityLabel } from "./domain";
 import type { AuthStatus, IssueReadOptions, LinearClient } from "./linear-client";
 import { unreachable } from "./unreachable";
 
@@ -756,6 +756,13 @@ export class MockLinearClient implements LinearClient {
     [GROWTH_TEAM.id, [MOCK_VIEWER_USER, MEI_USER, HARU_USER]],
   ]);
 
+  async getIssue(identifier: string): Promise<Issue> {
+    const normalized = normalizeIssueIdentifier(identifier);
+    const issue = this.issues.find((candidate) => candidate.identifier === normalized);
+    if (issue === undefined) throw new Error(`Issue not found: ${identifier}`);
+    return clone(issue);
+  }
+
   async getTeamMembers(teamId: string): Promise<UserSummary[]> {
     const members = this.membersByTeam.get(teamId);
     if (members === undefined) throw new Error(`Mock team not found: ${teamId}`);
@@ -831,6 +838,13 @@ export class MockLinearClient implements LinearClient {
       case "content":
         if (change.title.trim().length === 0) throw new Error("Mock issue title is required");
         issue.title = change.title.trim();
+        issue.description = change.description.length === 0 ? null : change.description;
+        break;
+      case "title":
+        if (change.title.trim().length === 0) throw new Error("Mock issue title is required");
+        issue.title = change.title.trim();
+        break;
+      case "description":
         issue.description = change.description.length === 0 ? null : change.description;
         break;
       case "status": {

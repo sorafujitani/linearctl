@@ -55,4 +55,35 @@ if (!issuePayload.issues.some((issue) => issue.identifier.startsWith("APP-"))) {
   throw new Error(`Unexpected mock issue list output: ${issueList.slice(0, 200)}`);
 }
 
+const issueView = await run(["issue", "view", "APP-101", "--mock", "--comments", "--json"]);
+const viewPayload = JSON.parse(issueView) as { identifier: string; comments: unknown[] };
+if (viewPayload.identifier !== "APP-101" || !Array.isArray(viewPayload.comments)) {
+  throw new Error(`Unexpected mock issue view output: ${issueView.slice(0, 200)}`);
+}
+
+const teamList = await run(["team", "list", "--mock"]);
+if (!teamList.includes("APP")) {
+  throw new Error(`Unexpected mock team list output: ${teamList.trim()}`);
+}
+
+const created = await run([
+  "issue",
+  "create",
+  "--mock",
+  "--team",
+  "APP",
+  "--title",
+  "Smoke issue",
+  "--priority",
+  "high",
+]);
+if (!created.startsWith("Created APP-")) {
+  throw new Error(`Unexpected mock issue create output: ${created.trim()}`);
+}
+
+const updated = await run(["issue", "update", "APP-101", "--mock", "--state", "Done"]);
+if (!updated.includes("State: Done")) {
+  throw new Error(`Unexpected mock issue update output: ${updated.trim()}`);
+}
+
 process.stdout.write(`smoke test passed: ${version.trim()} / mock workspace sample-workspace\n`);

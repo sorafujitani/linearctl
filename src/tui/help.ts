@@ -1,4 +1,4 @@
-import { matchesSearch } from "./domain";
+import { matchesSearch } from "../core/domain";
 import type { HelpEntry } from "./help-entry";
 import { EXTRA_HELP_ENTRIES, LIST_BINDINGS } from "./keymap";
 

@@ -18,7 +18,7 @@ Browse issues assigned to you or scoped by team, current cycle, and active proje
 - Update status, assignee, priority, cycle (including past and upcoming cycles), project, and labels
 - Create issues with a Markdown description, and projects with Markdown content
 - Copy issue URLs through OSC 52 terminal clipboard support
-- List issues non-interactively with `issue list`, with optional JSON output
+- Use it as a plain CLI: list, view, create, and update issues, and list teams, projects, and cycles, all with optional JSON output
 - Verify the connected Linear workspace before opening the TUI
 - Try the complete interface with synthetic data and no network access
 
@@ -88,15 +88,33 @@ linearctl --workspace <urlKey>
 
 The TUI can run without `--workspace`, but specifying it is recommended. If the connected workspace does not match, linearctl stops before reading or updating issues.
 
-For scripts and non-interactive environments, `issue list` prints issues without opening the TUI:
+For scripts and non-interactive environments, the same binary works as a plain CLI:
 
 ```sh
 linearctl issue list                 # issues assigned to you, across teams
 linearctl issue list --team APP      # one team's active issues
 linearctl issue list --team APP --mine --json
+linearctl issue list --team APP --all         # include completed and canceled
+linearctl issue view APP-101 --comments       # one issue with its thread
+linearctl team list
+linearctl project list --team APP
+linearctl cycle list --team APP
 ```
 
-`--json` also works with `auth status`. Reads are capped at the first 50 issues; the output notes when more exist on the server.
+Issues can also be created and updated without the TUI. Writes require the
+target workspace (`--workspace` or the config file), names are resolved within
+the issue's team and rejected when ambiguous, and each field is sent as its
+own bounded mutation so an update never touches an unrelated relation:
+
+```sh
+linearctl issue create --team APP --title "Fix cart badge" \
+  --description "Repro steps..." --assignee "Aiko Takahashi" --priority high
+linearctl issue update APP-101 --state Done --assignee none
+linearctl issue update APP-101 --label "Bug,Mobile"   # replaces all labels; "none" clears
+linearctl issue update APP-101 --cycle current --project "Mobile Experience Renewal"
+```
+
+`--json` works with every non-interactive command. Reads are capped at the first 50 issues; the output notes when more exist on the server.
 
 ## Configuration
 

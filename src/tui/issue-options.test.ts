@@ -1,6 +1,6 @@
 import { expect, it } from "vite-plus/test";
 
-import type { Cycle, Issue } from "./domain";
+import type { Cycle, Issue } from "../core/domain";
 import { NONE_VALUE } from "./issue-list";
 import { CLEAR_VALUE, cycleOptions, issueFilterOptions, optionsWithNone } from "./issue-options";
 

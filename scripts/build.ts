@@ -50,7 +50,7 @@ if (requestedTarget?.includes("linux")) {
 }
 
 const result = await Bun.build({
-  entrypoints: [resolve("src/cli.ts")],
+  entrypoints: [resolve("src/main.ts")],
   compile:
     requestedTarget === undefined
       ? { outfile }

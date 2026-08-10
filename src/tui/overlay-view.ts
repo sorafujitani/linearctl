@@ -7,13 +7,16 @@ import {
   type EditIssueField,
   type Overlay,
 } from "./app-state";
-import type { IssueChange } from "./domain";
+import type { IssueChange } from "../core/domain";
 import { ISSUE_DIMENSIONS, type IssueDimension, type IssueGroupDimension } from "./issue-list";
 import { PRIORITIES } from "./issue-options";
 import { withCaret } from "./text-input";
-import { unreachable } from "./unreachable";
+import { unreachable } from "../core/unreachable";
 
-export const ISSUE_ACTION_LABELS: Record<Exclude<IssueChange["kind"], "content">, string> = {
+export const ISSUE_ACTION_LABELS: Record<
+  Exclude<IssueChange["kind"], "content" | "title" | "description">,
+  string
+> = {
   status: "Status",
   assignee: "Assignee",
   priority: "Priority",

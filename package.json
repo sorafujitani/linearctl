@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "description": "A focused terminal UI for Linear",
   "bin": {
-    "linearctl": "./src/cli.ts"
+    "linearctl": "./src/main.ts"
   },
   "type": "module",
   "scripts": {
-    "dev": "bun run src/cli.ts",
-    "dev:mock": "bun run src/cli.ts --mock --workspace sample-workspace",
-    "auth:mock": "bun run src/cli.ts auth status --mock --workspace sample-workspace",
+    "dev": "bun run src/main.ts",
+    "dev:mock": "bun run src/main.ts --mock --workspace sample-workspace",
+    "auth:mock": "bun run src/main.ts auth status --mock --workspace sample-workspace",
     "check": "vp check",
     "check:fix": "vp check --fix",
     "test": "vp test --run",

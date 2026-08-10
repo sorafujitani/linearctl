@@ -1,5 +1,5 @@
-import { matchesSearch, type Issue } from "./domain";
-import { unreachable } from "./unreachable";
+import { matchesSearch, type Issue } from "../core/domain";
+import { unreachable } from "../core/unreachable";
 
 export const ISSUE_DIMENSIONS = [
   "status",

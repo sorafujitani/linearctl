@@ -10,8 +10,8 @@ import type {
   ProjectCreateInput,
   Team,
   UpdatedIssue,
-} from "./domain";
-import { matchesSearch, priorityLabel } from "./domain";
+} from "../core/domain";
+import { matchesSearch, priorityLabel } from "../core/domain";
 import {
   filterIssueList,
   groupedIssueTraversal,
@@ -23,7 +23,7 @@ import {
   type IssueFilters,
   type IssueGroupDimension,
 } from "./issue-list";
-import { unreachable } from "./unreachable";
+import { unreachable } from "../core/unreachable";
 
 export type TopNav = "my-issues" | "teams" | "cycles" | "projects";
 export type Catalog = "projects";
@@ -37,7 +37,12 @@ export interface SelectOption {
   label: string;
 }
 
-type SingleChoiceAction = Exclude<IssueChange["kind"], "content" | "labels">;
+// The TUI edits title/description together through the content editor; the
+// single-field arms exist for the CLI.
+type SingleChoiceAction = Exclude<
+  IssueChange["kind"],
+  "content" | "title" | "description" | "labels"
+>;
 
 export type EditIssueField = "title" | "description" | "submit";
 

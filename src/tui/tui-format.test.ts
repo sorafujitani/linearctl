@@ -1,7 +1,7 @@
 import { expect, it } from "vite-plus/test";
 
 import { createAppState, type AppState } from "./app-state";
-import type { Issue, Project } from "./domain";
+import type { Issue, Project } from "../core/domain";
 import { catalogDetailText, commentsText, issueDetailText, scopeTitle } from "./tui-format";
 
 const team = { id: "team-1", name: "Engineering", key: "ENG" };

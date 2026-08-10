@@ -68,24 +68,27 @@ describe("parseArgs", () => {
     });
   });
 
-  it("parses issue list with team, mine, and json options", () => {
+  it("parses issue list with team, mine, all, and json options", () => {
     expect(parseArgs(["issue", "list"])).toEqual({
       kind: "issue-list",
       connection: { mode: "real" },
       mine: false,
+      all: false,
       json: false,
     });
-    expect(parseArgs(["issue", "list", "--team", "app", "--mine", "--json"])).toEqual({
+    expect(parseArgs(["issue", "list", "--team", "app", "--mine", "--all", "--json"])).toEqual({
       kind: "issue-list",
       connection: { mode: "real" },
       team: "APP",
       mine: true,
+      all: true,
       json: true,
     });
     expect(parseArgs(["issue", "list", "--mock"])).toEqual({
       kind: "issue-list",
       connection: { mode: "mock", workspace: "sample-workspace" },
       mine: false,
+      all: false,
       json: false,
     });
     // The config defaultTeam is a TUI preference; issue list scopes only on explicit --team.
@@ -93,8 +96,114 @@ describe("parseArgs", () => {
       kind: "issue-list",
       connection: { mode: "real" },
       mine: false,
+      all: false,
       json: false,
     });
+  });
+
+  it("parses issue view with an identifier and view options", () => {
+    expect(parseArgs(["issue", "view", "APP-101", "--comments", "--json"])).toEqual({
+      kind: "issue-view",
+      connection: { mode: "real" },
+      identifier: "APP-101",
+      comments: true,
+      json: true,
+    });
+    expect(() => parseArgs(["issue", "view"])).toThrow("Usage:");
+    expect(() => parseArgs(["issue", "view", "APP-101", "APP-102"])).toThrow("Usage:");
+  });
+
+  it("parses issue create with required workspace, team, and title", () => {
+    expect(
+      parseArgs([
+        "issue",
+        "create",
+        "--workspace=w",
+        "--team",
+        "app",
+        "--title",
+        "New issue",
+        "--priority",
+        "high",
+        "--label",
+        "Bug,Design",
+      ]),
+    ).toEqual({
+      kind: "issue-create",
+      connection: { mode: "real", workspace: "w" },
+      team: "APP",
+      fields: { title: "New issue", priority: "high", label: "Bug,Design" },
+      json: false,
+    });
+    expect(() => parseArgs(["issue", "create", "--team", "APP", "--title", "x"])).toThrow(
+      "--workspace",
+    );
+    expect(() => parseArgs(["issue", "create", "--workspace=w", "--title", "x"])).toThrow("--team");
+    expect(() => parseArgs(["issue", "create", "--workspace=w", "--team", "APP"])).toThrow(
+      "--title",
+    );
+  });
+
+  it("parses issue update with an identifier and at least one field", () => {
+    expect(
+      parseArgs(["issue", "update", "APP-101", "--workspace=w", "--state", "In Progress"]),
+    ).toEqual({
+      kind: "issue-update",
+      connection: { mode: "real", workspace: "w" },
+      identifier: "APP-101",
+      fields: { state: "In Progress" },
+      json: false,
+    });
+    // The config workspace satisfies the write-workspace requirement.
+    expect(
+      parseArgs(["issue", "update", "APP-101", "--state", "Done"], { workspace: "w" }),
+    ).toMatchObject({ kind: "issue-update", connection: { mode: "real", workspace: "w" } });
+    expect(() => parseArgs(["issue", "update", "APP-101", "--state", "Done"])).toThrow(
+      "--workspace",
+    );
+    expect(() => parseArgs(["issue", "update", "APP-101", "--workspace=w"])).toThrow(
+      "at least one field",
+    );
+    expect(() =>
+      parseArgs(["issue", "update", "APP-101", "--workspace=w", "--title", " "]),
+    ).toThrow("non-empty --title");
+  });
+
+  it("accepts values with a single leading dash and rejects one-dash options", () => {
+    expect(
+      parseArgs(["issue", "update", "APP-1", "--workspace=w", "--description", "- bullet one"]),
+    ).toMatchObject({ fields: { description: "- bullet one" } });
+    expect(() => parseArgs(["-Xtitle=hacked", "issue", "update", "APP-1"])).toThrow(
+      "Unknown option: -Xtitle",
+    );
+    expect(() => parseArgs(["issue", "list", "--team", "--json"])).toThrow("requires a team key");
+  });
+
+  it("parses team, project, and cycle listings", () => {
+    expect(parseArgs(["team", "list", "--json"])).toEqual({
+      kind: "team-list",
+      connection: { mode: "real" },
+      json: true,
+    });
+    expect(parseArgs(["project", "list", "--team", "app"])).toEqual({
+      kind: "project-list",
+      connection: { mode: "real" },
+      team: "APP",
+      json: false,
+    });
+    expect(parseArgs(["cycle", "list", "--team", "app"])).toEqual({
+      kind: "cycle-list",
+      connection: { mode: "real" },
+      team: "APP",
+      json: false,
+    });
+    expect(() => parseArgs(["cycle", "list"])).toThrow("--team");
+  });
+
+  it("rejects options a command does not support", () => {
+    expect(() => parseArgs(["--title", "x"])).toThrow("not supported");
+    expect(() => parseArgs(["team", "list", "--team", "APP"])).toThrow("not supported");
+    expect(() => parseArgs(["issue", "view", "APP-1", "--mine"])).toThrow("issue list");
   });
 
   it("rejects --json and --mine outside non-interactive commands", () => {

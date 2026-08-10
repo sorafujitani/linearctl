@@ -1,7 +1,7 @@
 import type { SelectOption } from "./app-state";
-import { PRIORITY_LABELS, type Cycle, type Issue } from "./domain";
+import { PRIORITY_LABELS, type Cycle, type Issue } from "../core/domain";
 import { NONE_VALUE, type IssueDimension } from "./issue-list";
-import { unreachable } from "./unreachable";
+import { unreachable } from "../core/unreachable";
 
 export const CLEAR_VALUE = "__clear__";
 

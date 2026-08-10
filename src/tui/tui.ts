@@ -56,7 +56,7 @@ import {
   type SelectOption,
   type TopNav,
 } from "./app-state";
-import type { ClientMode } from "./client-factory";
+import type { ClientMode } from "../core/client-factory";
 import {
   sortWorkflowStates,
   type Cycle,
@@ -64,10 +64,10 @@ import {
   type IssueCommentPage,
   type IssuePage,
   type Workspace,
-} from "./domain";
+} from "../core/domain";
 import { HELP_ENTRIES, helpText } from "./help";
 import { ISSUE_DIMENSIONS, NONE_VALUE, type IssueGroupDimension } from "./issue-list";
-import type { LinearClient } from "./linear-client";
+import type { LinearClient } from "../core/linear-client";
 import { openUrlInBrowser, type UrlOpener } from "./open-url";
 import {
   deleteBackward,
@@ -81,7 +81,7 @@ import {
 import { isCreateSubmit, isEditorConfirm, isSearchTrigger, printableKeyText } from "./key-intent";
 import { CATALOG_CONTROLS, ISSUE_BROWSER_CONTROLS, listIntent, type ListIntent } from "./keymap";
 import { helpIntent, searchIntent, type Mode } from "./ui-state";
-import { unreachable } from "./unreachable";
+import { unreachable } from "../core/unreachable";
 import { openSelectedItemUrl, selectedItemUrl } from "./item-url";
 import {
   CLEAR_VALUE,
@@ -413,7 +413,9 @@ class LinearTui {
     void this.reload();
   }
 
-  private requestIssueAction(action: Exclude<IssueChange["kind"], "content">): void {
+  private requestIssueAction(
+    action: Exclude<IssueChange["kind"], "content" | "title" | "description">,
+  ): void {
     if (this.state.screen.kind !== "issue-browser") {
       this.setMessage(
         `Open an issue view before changing its ${ISSUE_ACTION_LABELS[action].toLowerCase()}`,
@@ -424,7 +426,9 @@ class LinearTui {
     void this.openIssueAction(action);
   }
 
-  private async openIssueAction(action: Exclude<IssueChange["kind"], "content">): Promise<void> {
+  private async openIssueAction(
+    action: Exclude<IssueChange["kind"], "content" | "title" | "description">,
+  ): Promise<void> {
     const issue = selectedIssue(this.state);
     if (issue === undefined) {
       this.setMessage(
