@@ -26,7 +26,7 @@ it("interprets search-mode keys including spaces and multibyte input", () => {
   expect(searchIntent(key("a", { ctrl: true }))).toEqual({ kind: "none" });
 });
 
-it("interprets help-mode keys with scrolling and single-character input", () => {
+it("interprets help-mode keys with scrolling and printable input", () => {
   expect(helpIntent(key("escape"))).toEqual({ kind: "close" });
   expect(helpIntent(key("?"))).toEqual({ kind: "close" });
   expect(helpIntent(key("up"))).toEqual({ kind: "scroll", delta: -3 });

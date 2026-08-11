@@ -35,8 +35,6 @@ export function helpIntent(key: KeyEvent): HelpIntent {
   if (key.name === "down") return { kind: "scroll", delta: 3 };
   if (key.name === "backspace") return { kind: "backspace" };
   if (key.ctrl === true && key.name === "u") return { kind: "clear" };
-  if (!key.ctrl && !key.meta && key.sequence.length === 1) {
-    return { kind: "input", text: key.sequence };
-  }
-  return { kind: "none" };
+  const text = printableKeyText(key);
+  return text === null ? { kind: "none" } : { kind: "input", text };
 }

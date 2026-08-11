@@ -1158,7 +1158,7 @@ class LinearTui {
         this.helpScroll.scrollBy(intent.delta);
         return this.render();
       case "backspace":
-        this.helpQuery = this.helpQuery.slice(0, -1);
+        this.helpQuery = deleteBackward(this.helpQuery, this.helpQuery.length).text;
         break;
       case "clear":
         this.helpQuery = "";

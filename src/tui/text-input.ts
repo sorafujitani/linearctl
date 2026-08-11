@@ -35,6 +35,7 @@ export function moveCursorHorizontal(text: string, cursor: number, delta: number
 
 export function lineStart(text: string, cursor: number): number {
   const position = clampCursor(text, cursor);
+  if (position === 0) return 0;
   const previous = text.lastIndexOf("\n", position - 1);
   return previous < 0 ? 0 : previous + 1;
 }
@@ -87,9 +88,12 @@ export function moveCursorVertical(text: string, cursor: number, delta: number):
 
 export function insertText(text: string, cursor: number, insert: string): TextState {
   const position = clampCursor(text, cursor);
+  const nextText = `${text.slice(0, position)}${insert}${text.slice(position)}`;
+  const end = position + insert.length;
+  const clampedEnd = clampCursor(nextText, end);
   return {
-    text: `${text.slice(0, position)}${insert}${text.slice(position)}`,
-    cursor: position + insert.length,
+    text: nextText,
+    cursor: clampedEnd === end ? end : moveCursorHorizontal(nextText, clampedEnd, 1),
   };
 }
 
@@ -113,7 +117,7 @@ export function withCaret(text: string, cursor: number, caret = "█"): string {
   if (position === text.length) return `${text}${caret}`;
   const next = moveCursorHorizontal(text, position, 1);
   const covered = text.slice(position, next);
-  return covered === "\n"
+  return covered.includes("\r") || covered.includes("\n")
     ? `${text.slice(0, position)}${caret}${text.slice(position)}`
     : `${text.slice(0, position)}${caret}${text.slice(next)}`;
 }
