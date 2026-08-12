@@ -174,6 +174,9 @@ Press `?` inside linearctl to open and search the complete keyboard reference.
 | `?`                        | Open keyboard help                                      |
 | `q`                        | Quit                                                    |
 
+The mouse works too: the wheel over the list moves the selection, and the wheel or the scrollbar over
+the Detail panel scrolls it. Hold `Shift` if your terminal needs it to select text while the TUI runs.
+
 Issue picker updates are sent only after confirmation with `Enter`. Pressing `Esc` closes a picker
 without writing. Press `e` to edit the selected issue's title and Markdown description; the edit is
 sent only from `Save changes` or with `Cmd+Enter` / `Ctrl+Enter` / `Ctrl+S` at the field list.

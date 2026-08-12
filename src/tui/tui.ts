@@ -2,8 +2,11 @@ import {
   BoxRenderable,
   CliRenderEvents,
   createCliRenderer,
+  fg,
   type KeyEvent,
+  type MouseEvent,
   ScrollBoxRenderable,
+  StyledText,
   TextAttributes,
   TextRenderable,
 } from "@opentui/core";
@@ -179,6 +182,7 @@ class LinearTui {
       width: "42%",
       flexShrink: 0,
       padding: 1,
+      onMouseScroll: (event) => this.handleListScroll(event),
     });
     this.detailBox = new BoxRenderable(renderer, {
       id: "detail-panel",
@@ -1028,6 +1032,17 @@ class LinearTui {
     if (intent !== null) this.applyListIntent(intent);
   }
 
+  /** Wheel over the list panel moves the selection; the detail panel scrolls itself. */
+  private handleListScroll(event: MouseEvent): void {
+    const scroll = event.scroll;
+    if (scroll === undefined) return;
+    if (this.busy || this.state.overlay !== null || this.mode !== "list") return;
+    if (scroll.direction !== "up" && scroll.direction !== "down") return;
+    const steps = Math.max(1, Math.round(scroll.delta));
+    this.state = moveSelection(this.state, scroll.direction === "up" ? -steps : steps);
+    this.render();
+  }
+
   private applyListIntent(intent: ListIntent): void {
     switch (intent.kind) {
       case "nav":
@@ -1529,14 +1544,17 @@ class LinearTui {
     this.helpContent.content = helpText(HELP_ENTRIES, this.helpQuery);
     const controls = this.controlsText();
     const filterCount = Object.keys(this.state.filters).length;
-    this.footer.content = [
-      `${this.options.mode === "mock" ? "MOCK  " : ""}${controls}`,
-      `Filters: ${filterCount} · Group: ${
-        this.state.groupBy === "none" ? "None" : DIMENSION_LABELS[this.state.groupBy]
-      }${this.state.includeDone ? " · Done: shown" : ""} · ${this.message}`,
-    ].join("\n");
-    this.footer.fg =
+    const statusColor =
       this.mode === "search" || this.mode === "help" ? COLORS.accent : this.messageColor;
+    // The controls line stays a fixed hint color so status colors only affect the status line.
+    this.footer.content = new StyledText([
+      fg(COLORS.hint)(`${this.options.mode === "mock" ? "MOCK  " : ""}${controls}\n`),
+      fg(statusColor)(
+        `Filters: ${filterCount} · Group: ${
+          this.state.groupBy === "none" ? "None" : DIMENSION_LABELS[this.state.groupBy]
+        }${this.state.includeDone ? " · Done: shown" : ""} · ${this.message}`,
+      ),
+    ]);
     this.renderer.requestRender();
   }
 
@@ -1654,7 +1672,9 @@ export async function runTui(options: TuiOptions): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: false,
     targetFps: 30,
-    useMouse: false,
+    // Without mouse reporting terminals translate the wheel into arrow keys, so
+    // scrolling the detail panel moved the list selection instead.
+    useMouse: true,
     consoleMode: "disabled",
     onDestroy: finish,
   });

@@ -11,6 +11,7 @@ export const COLORS = {
   border: "#414868",
   dim: "#737DA0",
   error: "#F7768E",
+  hint: "#7DCFFF",
   success: "#9ECE6A",
   text: "#C0CAF5",
   warning: "#E0AF68",
