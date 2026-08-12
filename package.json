@@ -1,6 +1,6 @@
 {
   "name": "linearctl",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A focused terminal UI for Linear",
   "bin": {
     "linearctl": "./src/main.ts"
