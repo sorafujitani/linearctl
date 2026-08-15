@@ -7,6 +7,10 @@ A focused terminal UI for browsing and updating [Linear](https://linear.app/) is
 
 Browse issues assigned to you or scoped by team, current cycle, and active project. Search, filter, and group issues, create issues and projects, then update common fields through explicit confirmation.
 
+## Screenshot
+
+![linearctl terminal UI showing Linear issues and issue details](docs/linearctl.png)
+
 ## Features
 
 - Browse My Issues, Team Issues, current Cycles, and active Projects
