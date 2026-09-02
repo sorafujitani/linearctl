@@ -39,10 +39,11 @@ export function configFilePath(
   return join(configHome, "linearctl", "config.json");
 }
 
-export function parseUserConfig(input: unknown): UserConfig {
+export function parseUserConfig(input: unknown, source?: string): UserConfig {
   const result = v.safeParse(userConfigSchema, input);
   if (!result.success) {
-    throw new Error(result.issues[0]?.message ?? "The config file is invalid.");
+    const detail = result.issues[0]?.message ?? "The config file is invalid.";
+    throw new Error(source === undefined ? detail : `Invalid config file ${source}: ${detail}`);
   }
   return result.output;
 }
@@ -65,12 +66,7 @@ export async function loadUserConfig(
   } catch {
     throw new Error(`Invalid JSON in config file: ${path}`);
   }
-  try {
-    return parseUserConfig(input);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "The config file is invalid.";
-    throw new Error(`Invalid config file ${path}: ${message}`);
-  }
+  return parseUserConfig(input, path);
 }
 
 export function parseTeamKey(value: string): string {

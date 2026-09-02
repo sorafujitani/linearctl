@@ -65,6 +65,10 @@ describe("user config", () => {
         workspace: "sample-workspace",
         defaultTeam: "GROW",
       });
+      await writeFile(join(directory, "config.json"), JSON.stringify({ workspace: "bad slug" }));
+      await expect(loadUserConfig({ XDG_CONFIG_HOME: root })).rejects.toThrow(
+        /Invalid config file .*config\.json/,
+      );
       await writeFile(join(directory, "config.json"), "{");
       await expect(loadUserConfig({ XDG_CONFIG_HOME: root })).rejects.toThrow("Invalid JSON");
     } finally {

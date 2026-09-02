@@ -84,6 +84,7 @@ import {
 import { isCreateSubmit, isEditorConfirm, isSearchTrigger, printableKeyText } from "./key-intent";
 import { CATALOG_CONTROLS, ISSUE_BROWSER_CONTROLS, listIntent, type ListIntent } from "./keymap";
 import { helpIntent, searchIntent, type Mode } from "./ui-state";
+import { errorMessage } from "../core/error";
 import { unreachable } from "../core/unreachable";
 import { openSelectedItemUrl, selectedItemUrl } from "./item-url";
 import {
@@ -286,11 +287,23 @@ class LinearTui {
     void this.initialize();
   }
 
-  private async initialize(): Promise<void> {
+  /** Serialize async UI work: one in-flight action, errors stay in the status line. */
+  private async withBusy(work: () => Promise<void>): Promise<void> {
     if (this.busy) return;
     this.busy = true;
-    let shouldReload = false;
     try {
+      await work();
+    } catch (error) {
+      this.setMessage(errorMessage(error), COLORS.error);
+    } finally {
+      this.busy = false;
+      this.render();
+    }
+  }
+
+  private async initialize(): Promise<void> {
+    let shouldReload = false;
+    await this.withBusy(async () => {
       const teams = await this.options.client.getTeams();
       this.state = { ...this.state, teams };
       const configuredTeam = this.options.defaultTeam?.toUpperCase();
@@ -311,16 +324,8 @@ class LinearTui {
           configuredTeam === undefined ? COLORS.dim : COLORS.error,
         );
       }
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-    }
-    if (shouldReload) {
-      void this.reload();
-      return;
-    }
-    this.render();
+    });
+    if (shouldReload) void this.reload();
   }
 
   private async reload(): Promise<void> {
@@ -328,16 +333,7 @@ class LinearTui {
       await this.reloadIssues();
       return;
     }
-    if (this.busy) return;
-    this.busy = true;
-    try {
-      await this.reloadCatalog();
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-      this.render();
-    }
+    await this.withBusy(() => this.reloadCatalog());
   }
 
   private async reloadIssues(force = false): Promise<void> {
@@ -387,7 +383,7 @@ class LinearTui {
       // the current view's message with its own failure.
       if (this.state.pendingIssueRequest?.id === requestId) {
         this.state = { ...this.state, pendingIssueRequest: null };
-        this.setMessage(this.errorMessage(error), COLORS.error);
+        this.setMessage(errorMessage(error), COLORS.error);
       }
     } finally {
       this.render();
@@ -441,8 +437,7 @@ class LinearTui {
       );
       return;
     }
-    this.busy = true;
-    try {
+    await this.withBusy(async () => {
       if (action === "status") {
         const states = sortWorkflowStates(
           await this.options.client.getWorkflowStates(issue.team.id),
@@ -523,12 +518,7 @@ class LinearTui {
           : "Use Up/Down to select, Enter to confirm, or Esc to cancel",
         COLORS.dim,
       );
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-      this.render();
-    }
+    });
   }
 
   private openSingle(
@@ -607,8 +597,7 @@ class LinearTui {
     if (overlay === null || this.busy) return;
     if (overlay.kind === "create-issue") {
       const draft = overlay.draft;
-      this.busy = true;
-      try {
+      await this.withBusy(async () => {
         if (field === "status") {
           const states = sortWorkflowStates(
             await this.options.client.getWorkflowStates(draft.teamId),
@@ -701,17 +690,11 @@ class LinearTui {
             selectedIds: [...draft.labelIds],
           });
         }
-      } catch (error) {
-        this.setMessage(this.errorMessage(error), COLORS.error);
-      } finally {
-        this.busy = false;
-        this.render();
-      }
+      });
       return;
     }
     if (overlay.kind === "create-project" && field === "lead") {
-      this.busy = true;
-      try {
+      await this.withBusy(async () => {
         const users = await this.options.client.getTeamMembers(overlay.draft.teamId);
         const picked = optionsWithNone(
           users.map((user) => ({ id: user.id, label: user.name })),
@@ -725,12 +708,7 @@ class LinearTui {
           options: picked.options,
           selectedIndex: picked.selectedIndex,
         });
-      } catch (error) {
-        this.setMessage(this.errorMessage(error), COLORS.error);
-      } finally {
-        this.busy = false;
-        this.render();
-      }
+      });
     }
   }
 
@@ -739,17 +717,11 @@ class LinearTui {
       this.setMessage("Issue title is required", COLORS.error);
       return;
     }
-    this.busy = true;
-    try {
+    await this.withBusy(async () => {
       const created = await this.options.client.createIssue(issueCreateInputFromDraft(draft));
       this.state = applyCreatedIssue(this.state, created);
       this.setMessage(`Created ${created.identifier}`, COLORS.success);
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-      this.render();
-    }
+    });
   }
 
   private async submitCreateProject(draft: ProjectCreateDraft): Promise<void> {
@@ -757,17 +729,11 @@ class LinearTui {
       this.setMessage("Project name is required", COLORS.error);
       return;
     }
-    this.busy = true;
-    try {
+    await this.withBusy(async () => {
       const created = await this.options.client.createProject(projectCreateInputFromDraft(draft));
       this.state = applyCreatedProject(this.state, created);
       this.setMessage(`Created project ${created.name}`, COLORS.success);
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-      this.render();
-    }
+    });
   }
 
   private async submitEditIssue(draft: IssueEditDraft): Promise<void> {
@@ -789,17 +755,11 @@ class LinearTui {
       this.render();
       return;
     }
-    this.busy = true;
-    try {
+    await this.withBusy(async () => {
       const updated = await this.options.client.updateIssue(change);
       this.state = applyIssueUpdate(this.state, updated);
       this.setMessage(`Updated ${issue.identifier}`, COLORS.success);
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-      this.render();
-    }
+    });
   }
 
   private async confirmOverlay(): Promise<void> {
@@ -1004,17 +964,11 @@ class LinearTui {
       this.render();
       return;
     }
-    this.busy = true;
-    try {
+    await this.withBusy(async () => {
       const updated = await this.options.client.updateIssue(change);
       this.state = applyIssueUpdate(this.state, updated);
       this.setMessage("Issue updated", COLORS.success);
-    } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
-    } finally {
-      this.busy = false;
-      this.render();
-    }
+    });
   }
 
   private handleKey(key: KeyEvent): void {
@@ -1617,7 +1571,7 @@ class LinearTui {
         COLORS.dim,
       );
     } catch (error) {
-      this.setMessage(this.errorMessage(error), COLORS.error);
+      this.setMessage(errorMessage(error), COLORS.error);
     }
     this.render();
   }
@@ -1634,7 +1588,7 @@ class LinearTui {
         opened ? COLORS.success : COLORS.error,
       );
     } catch (error) {
-      this.setMessage(`Could not open URL: ${this.errorMessage(error)}`, COLORS.error);
+      this.setMessage(`Could not open URL: ${errorMessage(error)}`, COLORS.error);
     }
   }
 
@@ -1655,9 +1609,6 @@ class LinearTui {
     this.message = message;
     this.messageColor = color;
     this.render();
-  }
-  private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : "An unexpected error occurred.";
   }
   private quit(): void {
     this.done();

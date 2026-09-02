@@ -20,6 +20,7 @@ import {
 import { createClient } from "../core/client-factory";
 import { loadUserConfig } from "../core/config";
 import type { IssueScope, Team, UpdatedIssue } from "../core/domain";
+import { errorMessage } from "../core/error";
 import { assertWorkspace, type LinearClient } from "../core/linear-client";
 import { runTui } from "../tui/tui";
 import { VERSION } from "../core/version";
@@ -121,20 +122,12 @@ async function applyIssueChanges(
 }
 
 async function main(): Promise<void> {
-  let command: Command;
-  try {
-    const args = Bun.argv.slice(2);
-    const skipConfig = args.some((argument) =>
-      ["--help", "-h", "--version", "-V"].includes(argument),
-    );
-    const config = skipConfig ? {} : await loadUserConfig(process.env);
-    command = parseArgs(args, config);
-  } catch (error) {
-    if (error instanceof UsageError || error instanceof Error) {
-      fail(error.message, true);
-    }
-    fail("Could not parse the command line.", true);
-  }
+  const args = Bun.argv.slice(2);
+  const skipConfig = args.some((argument) =>
+    ["--help", "-h", "--version", "-V"].includes(argument),
+  );
+  const config = skipConfig ? {} : await loadUserConfig(process.env);
+  const command = parseArgs(args, config);
 
   if (command.kind === "help") {
     process.stdout.write(HELP);
@@ -149,17 +142,8 @@ async function main(): Promise<void> {
   }
 
   const client = createClient(command.connection.mode, process.env);
-  let status;
-  try {
-    status = await client.getAuthStatus();
-    assertWorkspace(command.connection.workspace, status.workspace);
-  } catch (error) {
-    const fallback =
-      command.connection.mode === "mock"
-        ? "Mock workspace verification failed."
-        : "Linear connection verification failed.";
-    fail(error instanceof Error ? error.message : fallback);
-  }
+  const status = await client.getAuthStatus();
+  assertWorkspace(command.connection.workspace, status.workspace);
 
   switch (command.kind) {
     case "auth-status": {
@@ -235,6 +219,6 @@ export async function runCli(): Promise<void> {
   try {
     await main();
   } catch (error) {
-    fail(error instanceof Error ? error.message : "An unexpected error occurred.");
+    fail(errorMessage(error), error instanceof UsageError);
   }
 }
