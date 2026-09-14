@@ -2,10 +2,13 @@ import {
   BoxRenderable,
   CliRenderEvents,
   createCliRenderer,
+  decodePasteBytes,
   fg,
   type KeyEvent,
   type MouseEvent,
+  type PasteEvent,
   ScrollBoxRenderable,
+  stripAnsiSequences,
   StyledText,
   TextAttributes,
   TextRenderable,
@@ -118,7 +121,7 @@ interface TuiOptions {
   readonly openUrl?: UrlOpener;
 }
 
-class LinearTui {
+export class LinearTui {
   private readonly renderer: Awaited<ReturnType<typeof createCliRenderer>>;
   private readonly options: TuiOptions;
   private readonly done: () => void;
@@ -279,6 +282,7 @@ class LinearTui {
     root.add(this.helpBox);
     renderer.root.add(root);
     renderer.keyInput.on("keypress", (key) => this.handleKey(key));
+    renderer.keyInput.on("paste", (event) => this.handlePaste(event));
     renderer.on(CliRenderEvents.RESIZE, () => this.render());
   }
 
@@ -984,6 +988,41 @@ class LinearTui {
     if (this.mode === "search") return this.handleSearchKey(key);
     const intent = listIntent(key);
     if (intent !== null) this.applyListIntent(intent);
+  }
+
+  private handlePaste(event: PasteEvent): void {
+    if (this.busy || event.metadata?.kind === "binary") return;
+    const text = stripAnsiSequences(decodePasteBytes(event.bytes)).replace(/\r\n?/g, "\n");
+    if (text.length === 0) return;
+    const singleLine = text.replace(/[\n\t]/g, " ");
+    const overlay = this.state.overlay;
+    if (
+      (overlay?.kind === "create-issue" && overlay.editor !== "fields") ||
+      (overlay?.kind === "edit-issue" && overlay.editor !== "fields") ||
+      (overlay?.kind === "create-project" && overlay.editor !== "fields")
+    ) {
+      const multiline =
+        overlay.kind === "create-project"
+          ? overlay.editor === "content"
+          : overlay.editor === "description";
+      const next = insertText(
+        this.editorText(overlay),
+        overlay.cursor,
+        multiline ? text : singleLine,
+      );
+      this.setEditorText(overlay, next.text, next.cursor);
+    } else if (overlay !== null) {
+      if (!this.state.overlaySearch.active) return;
+      this.state = setOverlayQuery(this.state, `${this.state.overlaySearch.query}${singleLine}`);
+    } else if (this.mode === "search") {
+      this.state = setQuery(this.state, `${this.state.query}${singleLine}`);
+    } else if (this.mode === "help") {
+      this.helpQuery = `${this.helpQuery}${singleLine}`;
+      this.helpScroll.scrollTo(0);
+    } else {
+      return;
+    }
+    this.render();
   }
 
   /** Wheel over the list panel moves the selection; the detail panel scrolls itself. */
