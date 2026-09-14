@@ -215,6 +215,9 @@ everywhere.
   Markdown editors, `Home` / `End` (or `Ctrl+A` / `Ctrl+E`) jump to the line edges, `Backspace` and
   `Delete` remove around the caret, and `Ctrl+U` clears to the line start. Text is inserted at the
   caret, so you can edit earlier lines without retyping them.
+- Use your terminal's paste command in text editors and active search fields. Markdown editors keep
+  line breaks and tabs; single-line fields replace them with spaces. Pasting never submits a form
+  or runs keyboard shortcuts.
 - Pickers (status, assignee, priority, cycle, project, labels, team) filter with `/`. Type to narrow
   the list, `↑` / `↓` move within the matches, `Enter` confirms the highlighted row, and `Esc` clears
   the filter before it closes the picker. The same filter works in the update pickers.
